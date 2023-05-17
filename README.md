@@ -4,7 +4,11 @@ Samsung Gear VR Controller client in python
 ## Summary
 This is attempt to read Gear VR Controller using bluetooth LE.
 
-This work includes the following additions:
+Check gatt/gearVRC.py
+
+Currenlty only runs on unix, until conversion to bleak is completed.
+
+This work includes the following additions to other's implementations:
 
 - Reading of device information including battery status and notification
 - Reading of temperature and time stamps
