@@ -29,3 +29,5 @@ This work needs additional software to calibrate the sensor:
 - Reverse Engineering https://jsyang.ca/hacks/gear-vr-rev-eng/
 - GATT: https://github.com/rdady/gear-vr-controller-linux/
 
+### Calibration
+Check out https://github.com/makerportal/mpu92-calibration
