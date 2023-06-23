@@ -29,9 +29,12 @@ import math
 import time
 import numpy as np
 import more_itertools as mit
+import os
 
 from bleak      import BleakClient, BleakScanner
 from bleak.exc  import BleakError
+from bleak.backends.characteristic import BleakGATTCharacteristic
+
 from pyIMU.madgwick   import Madgwick
 from pyIMU.quaternion import Vector3D
 from pyIMU.utilities import q2rpy, heading
@@ -97,6 +100,26 @@ def clamp(val, smallest, largest):
     if val > largest: return largest
     return val
 
+def calibrate(data, offset=Vector3D(0.,0.,0.), scale=Vector3D(1.,1.,1.), crosscorr=None):
+    ''' 
+    IMU calibration
+    bias is offset so that 0 is in the middle of the range
+    scale is gain so that 1 is the maximum value
+    cross correlation is cross axis sensitivity
+    
+    Expects data, bias and scale to be a Vector3D
+    Expects crosscorr to be 3x3 numpy array
+    '''
+    # Bias
+    data = data-offset
+    # Scale, assumed pos and neg sensitivity is the same
+    data = data/scale
+    # Cross Correlation
+    if crosscorr is not None:
+        data = data.rotate(crosscorr)
+
+    return data
+
 ################################################################
 # gearVRC 
 ################################################################
@@ -105,7 +128,7 @@ class gearVRC:
             
     def __init__(self, device_name=None, device_address=None, logger=None, VRMode=False) -> None:
 
-        super(gearVRC, self).__init__(device_address=device_address, device_name=device_name, logger=logger, VRMode=VRMode)
+        # super(gearVRC, self).__init__()
 
         # Bluetooth device description
         self.device_name          = device_name
@@ -284,7 +307,7 @@ class gearVRC:
                             await self.subscribe_notifications() # subscribe to device characteristics that have notification function
                             await self.start_sensor() # start the sensors
                     except BleakError:
-                        self._client = None
+                        self.disconnected.set()
                         self.logger.log(logging.ERROR,"Error connecting to {}".format(self.device_name))
 
                 # Wait until disconnection occurs
@@ -337,13 +360,9 @@ class gearVRC:
         '''        
         
         # Sensor data
-        await self._client.start_notify(
-            self.controller_data_characteristic, self.handle_sensorData
-        )
+        await self._client.start_notify(self.controller_data_characteristic, self.handle_sensorData)
         # Battery data
-        await self._client.start_notify(
-            self.battery_level_characteristic, self.handle_batteryData
-        )
+        await self._client.start_notify(self.battery_level_characteristic,   self.handle_batteryData)
                 
     async def unsubscribe_notifications(self):
         '''
@@ -465,7 +484,7 @@ class gearVRC:
         # Serial Number
         try: 
             value = await self._client.read_gatt_char(self.serial_number_characteristic)
-            self.model_number = value.decode("utf-8")
+            self.serial_number = value.decode("utf-8")
             self.logger.log(logging.DEBUG,'Model Number: {}'.format(self.model_number))                
         except Exception as e:
             self.logger.log(logging.ERROR, 'Could not read serial number: {}'.format(e))
@@ -479,7 +498,7 @@ class gearVRC:
         # Firmware Revision
         try: 
             value = await self._client.read_gatt_char(self.firmware_version_characteristic)
-            self.firmware_revision = value.decode("utf-8")
+            self.firmware_revision = int.from_bytes(value,'big')
             self.logger.log(logging.DEBUG,'Firmware Revision: {}'.format(self.firmware_revision))
         except Exception as e:
             self.logger.log(logging.ERROR, 'Could not read firmware revision: {}'.format(e))
@@ -498,7 +517,7 @@ class gearVRC:
         except Exception as e:
             self.logger.log(logging.ERROR, 'Could not read pnp id: {}'.format(e))
 
-    def handle_sensorData(self, sender, data):
+    def handle_sensorData(self, characteristic: BleakGATTCharacteristic, data: bytearray):
         '''
         Decode the sensor data
         '''
@@ -714,23 +733,23 @@ class gearVRC:
         self.logger.log(logging.DEBUG, "Gyro  {:5.2f} {:5.2f} {:5.2f} ".format(self.gyr.x,self.gyr.y,self.gyr.z))
         self.logger.log(logging.DEBUG, "Azimuth  {:6.2f}  ".format(self.azimuth))
    
-    def handle_batteryData(self, sender, data):
+    def handle_batteryData(self, characteristic: BleakGATTCharacteristic, data: bytearray):
         self.battery_level = int.from_bytes(data,'big')
         self.logger.lot(logging.DEBUG,"Battery level: {}".format(self.battery_level))
 
     async def start_sensor(self):
         # Initialize the device, not sure why command needs to be sent twice
         if self._VRMode:
-            await self.client.write_gatt_char(self.controller_command_characteristics,CMD_SENSOR)
-            await self.client.write_gatt_char(self.controller_command_characteristics,CMD_VR_MODE)
+            await self._client.write_gatt_char(self.controller_command_characteristics,CMD_SENSOR)
+            await self._client.write_gatt_char(self.controller_command_characteristics,CMD_VR_MODE)
         else:
-            await self.client.write_gatt_char(self.controller_command_characteristics,CMD_SENSOR)
-            await self.client.write_gatt_char(self.controller_command_characteristics,CMD_SENSOR)
+            await self._client.write_gatt_char(self.controller_command_characteristics,CMD_SENSOR)
+            await self._client.write_gatt_char(self.controller_command_characteristics,CMD_SENSOR)
 
     async def stop_sensor(self):
         try:
-            await self.client.write_gatt_char(self.controller_command_characteristics,CMD_OFF)
-            await self.client.write_gatt_char(self.controller_command_characteristics,CMD_OFF)
+            await self._client.write_gatt_char(self.controller_command_characteristics,CMD_OFF)
+            await self._client.write_gatt_char(self.controller_command_characteristics,CMD_OFF)
             await self.unsubscribe_notifications()
             self.logger.log(logging.DEBUG,'Stopped')                
         except Exception as e:
@@ -741,35 +760,15 @@ class gearVRC:
             if self.connected.is_set():
                 try:
                     # Not sure about the numbers of resending needed
-                    await self.client.write_gatt_char(self.controller_command_characteristics,CMD_KEEP_ALIVE)
-                    await self.client.write_gatt_char(self.controller_command_characteristics,CMD_KEEP_ALIVE)
-                    await self.client.write_gatt_char(self.controller_command_characteristics,CMD_KEEP_ALIVE)
-                    await self.client.write_gatt_char(self.controller_command_characteristics,CMD_KEEP_ALIVE)
+                    await self._client.write_gatt_char(self.controller_command_characteristics,CMD_KEEP_ALIVE)
+                    await self._client.write_gatt_char(self.controller_command_characteristics,CMD_KEEP_ALIVE)
+                    await self._client.write_gatt_char(self.controller_command_characteristics,CMD_KEEP_ALIVE)
+                    await self._client.write_gatt_char(self.controller_command_characteristics,CMD_KEEP_ALIVE)
                     self.logger.log(logging.DEBUG,'Keep alive sent')                
                 except Exception as e:
                     self.logger.log(logging.ERROR, 'Could not send Keep alive: {}'.format(e))            
                     
             await asyncio.sleep(KEEPALIVEINTERVAL)
-    
-    def calibrate(data, offset=Vector3D(0.,0.,0.), scale=Vector3D(1.,1.,1.), crosscorr=None):
-        ''' 
-        IMU calibration
-        bias is offset so that 0 is in the middle of the range
-        scale is gain so that 1 is the maximum value
-        cross correlation is cross axis sensitivity
-        
-        Expects data, bias and scale to be a Vector3D
-        Expects crosscorr to be 3x3 numpy array
-        '''
-        # Bias
-        data = data-offset
-        # Scale, assumed pos and neg sensitivity is the same
-        data = data/scale
-        # Cross Correlation
-        if crosscorr is not None:
-            data = data.rotate(crosscorr)
-
-        return data
 
     async def fuse(self):
         ''' 
@@ -851,13 +850,15 @@ async def main(args: argparse.Namespace):
     loop = asyncio.get_running_loop()
 
     # Set up a Control-C handler to gracefully stop the program
-    loop.add_signal_handler(signal.SIGINT,  lambda: asyncio.ensure_future(handle_termination(controller)) ) # conotrol-c
-    loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.ensure_future(handle_termination(controller)) ) # kill
+    # This only exists in Unix
+    if os.name != 'nt':
+        loop.add_signal_handler(signal.SIGINT,  lambda: asyncio.create_task(handle_termination(controller)) ) # control-c
+        loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.ensure_future(handle_termination(controller)) ) # kill
 
     connection_task = asyncio.create_task(controller.connect())        # remain connected, will not terminate
-    fusion_task     = asyncio.create_task(controller.fuse())           # attempt data fusion, will not terminate
-    reporting_task  = asyncio.create_task(controller.report())         # report new data, will not terminate
-    keepalive_task  = asyncio.create_task(controller.keep_alive())     # keep sensor alive, will not terminate
+    # fusion_task     = asyncio.create_task(controller.fuse())           # attempt data fusion, will not terminate
+    # reporting_task  = asyncio.create_task(controller.report())         # report new data, will not terminate
+    # keepalive_task  = asyncio.create_task(controller.keep_alive())     # keep sensor alive, will not terminate
 
     # These tasks will not terminate 
     await asyncio.gather(connection_task, fusion_task, reporting_task, keepalive_task)
