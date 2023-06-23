@@ -1,4 +1,7 @@
 #!/usr/bin/python3
+
+# Preparations on Linux/Raspian:
+#
 # bluetoothd --version
 # sudo pip3 install gatt
 # sudo apt-get install python3-dbus
@@ -6,8 +9,6 @@
 # sudo gattctl --discover
 # sudo gattctl --connect AA:BB:CC:DD:EE:FF # Replace the MAC address with your Bluetooth device's MAC address
 # sudo gattctl --help # To list all available commands
-
-# need to figur eout how to reseve more space for self.services
 
 import gatt
 

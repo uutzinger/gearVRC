@@ -3,25 +3,23 @@ from bleak import BleakScanner, BleakClient
 
 # https://github.com/hbldh/bleak
 
-MACADDRESS              = "2C:BA:BA:2E:17:DB"
-DEVICE_NAME_UUID        = "00002a00-0000-1000-8000-00805f9b34fb"
-PNP_ID_UUID             = "00002a50-0000-1000-8000-00805f9b34fb"
-SOFTWARE_REVISION_UUID  = "00002a28-0000-1000-8000-00805f9b34fb"
-FIRMWARE_REVISION_UUID  = "00002a26-0000-1000-8000-00805f9b34fb"
-HARDWARE_REVISION_UUID  = "00002a27-0000-1000-8000-00805f9b34fb"
-SERIAL_NUMBER_UUID      = "00002a25-0000-1000-8000-00805f9b34fb"
-MODEL_NUMBER_UUID       = "00002a24-0000-1000-8000-00805f9b34fb"
-MANUFACTURER_UUID       = "00002a29-0000-1000-8000-00805f9b34fb"
-
-
 async def discover():
+    myDevice = None
+
     devices = await BleakScanner.discover()
     for d in devices:
-        print(d)
+        if d.name == 'Gear VR Controller(17DB)':
+            myDevice = d
+            print('{}: {}, Found it!'.format(d.address, d.name))
+        else:
+            print(d)
 
-async def readinfo():
-    async with BleakClient(MACADDRESS) as client:
-
+    if myDevice != None:
+        async with BleakClient(myDevice) as client:
+            print("Services:")
+            for service in client.services:
+                print(service)
+                    
         device_name = await client.read_gatt_char(DEVICE_NAME_UUID)
         print("Device Name: {0}".format("".join(map(chr, device_name))))
 
@@ -35,4 +33,3 @@ async def readinfo():
         print("Software Revision: {0}".format("".join(map(chr, software_revision))))
 
 asyncio.run(discover())
-asyncio.run(readinfo())

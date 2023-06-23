@@ -6,7 +6,7 @@ This is attempt to read Gear VR Controller using bluetooth LE.
 
 Check gatt/gearVRC.py
 
-Currenlty only runs on unix, until conversion to bleak is completed.
+Currently only runs on unix, until conversion to bleak is completed.
 
 This work includes the following additions to other's implementations:
 
@@ -31,3 +31,14 @@ This work needs additional software to calibrate the sensor:
 
 ### Calibration
 Check out https://github.com/makerportal/mpu92-calibration
+
+### Windows
+BLE Console from https://github.com/sensboston/BLEConsole 
+
+#00: GenericAccess
+#01: GenericAttribute
+#02: Battery
+#03: DeviceInformation
+#04: 6265
+#05: Custom Service: 4f63756c-7573-2054-6872-65656d6f7465
+#06: 65269
