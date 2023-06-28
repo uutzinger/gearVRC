@@ -11,7 +11,7 @@ from bleak import BleakClient, BleakScanner
 # 4f63756c-7573-2054-6872-65656d6f7465 (Handle: 48): Unknown
 # 0000fef5-0000-1000-8000-00805f9b34fb (Handle: 54): Dialog Semiconductor GmbH
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 DEVICE_NAME = 'Gear VR Controller(17DB)'
 

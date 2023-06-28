@@ -11,20 +11,23 @@ from bleak import BleakClient, BleakScanner
 # Restart-Service -Name bthserv -Force
 # Update-HostStorageCache
 
-logging.basicConfig(level=logging.DEBUG)
-#logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 DEVICE_NAME         = 'Gear VR Controller(17DB)'
+DEVICE_MAC          = '2C:BA:BA:2E:17:DB'
 SERVICE_NAME        = 'Battery Service'
 CHARACTERISTIC_NAME = 'Battery Level'
 
 async def main():
+
     myDevice = None
     myService = None
     myCharacteristic = None
     
     print("Scanning for Devices...")
     myDevice = await BleakScanner.find_device_by_name(DEVICE_NAME, timeout=10.0)
+    # myDevice = await BleakScanner.find_device_by_address(DEVICE_MAC, timeout=10.0)
             
     if myDevice !=None:
         print('Found Device {}'.format(DEVICE_NAME))
@@ -87,4 +90,4 @@ async def main():
     else:
         print('Could not find Device {}'.format(DEVICE_NAME))
         
-asyncio.run(main())
+asyncio.run(main(), debug=False)

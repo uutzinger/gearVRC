@@ -104,7 +104,7 @@ MAXYTOUCH                        = 1024
 
 MINIMUPDATETIME                  = 0.23                     # Not sure haw fast this device might be
 
-KEEPALIVEINTERVAL                = 60                       # Every minute
+KEEPALIVEINTERVAL                = 10                       # Every minute
 BATTERYINTERVAL                  = 60*5                     # Every 5 minutes
 
 TUCSON_LATITUDE                  = 32.253460
@@ -122,6 +122,7 @@ import collections
 import logging
 import struct
 import ahrs
+from copy import copy
 
 def ror(l, n):
     '''
@@ -170,7 +171,7 @@ class GearVRC(gatt.Device):
     provide logger, queue size, VRMode
     '''
 
-    def __init__(self, mac_address, manager, logger = None, VRMode=False, auto_reconnect=False, queuesize=32):
+    def __init__(self, mac_address, manager, logger = None, VRMode=False, auto_reconnect=False):
 
         super(GearVRC, self).__init__(mac_address=mac_address, manager=manager)
 
@@ -183,7 +184,6 @@ class GearVRC(gatt.Device):
 
         self._auto_reconnect = auto_reconnect
 
-        self._queuesize = queuesize
         # Init vars
         self._previous_axisX  = 0                # touchpad X
         self._previous_axisY  = 0                # touchpad Y
@@ -207,8 +207,10 @@ class GearVRC(gatt.Device):
         self._lastTime        = time.perf_counter()
         self._currentTime     = time.perf_counter()
         self._lastBatteryTime = time.perf_counter()
+        self._lastFPSTime     = time.perf_counter()
 
         self._updatecounts    = 0
+        self.fps = 0
 
         self._firstTime       = True
 
@@ -236,17 +238,17 @@ class GearVRC(gatt.Device):
         self._dirRight  = False
         self._dirCenter = False
         
-        # LOCAL Eath Magnetic Field
-        self.__wmm       = ahrs.utils.WMM(latitude=TUCSON_LATITUDE, longitude=TUCSON_LONGITUDE, height=TUCSON_HEIGHT)
-        self.__mag       = np.array([self.__wmm.X, self.__wmm.Y, self.__wmm.Z])
-        # LOCAL Gravity
-        self.__gravity   = np.array([0.0, 0.0, ahrs.utils.WGS().normal_gravity(TUCSON_LATITUDE, TUCSON_HEIGHT)])
-        # Initial Post Estimator
-        self.__tilt = ahrs.filters.Tilt()
-        # Pose Estimator
-        self.__madgwick  = ahrs.filters.Madgwick()
-        # Pose
-        self.attitudeQ  = collections.deque([], maxlen=self.__queuesize)         
+        # # LOCAL Eath Magnetic Field
+        # self.__wmm       = ahrs.utils.WMM(latitude=TUCSON_LATITUDE, longitude=TUCSON_LONGITUDE, height=TUCSON_HEIGHT)
+        # self.__mag       = np.array([self.__wmm.X, self.__wmm.Y, self.__wmm.Z])
+        # # LOCAL Gravity
+        # self.__gravity   = np.array([0.0, 0.0, ahrs.utils.WGS().normal_gravity(TUCSON_LATITUDE, TUCSON_HEIGHT)])
+        # # Initial Post Estimator
+        # self.__tilt = ahrs.filters.Tilt()
+        # # Pose Estimator
+        # self.__madgwick  = ahrs.filters.Madgwick()
+        # # Pose
+        # self.attitudeQ  = collections.deque([], maxlen=self.__queuesize)         
         
     def connect_succeeded(self):
         '''
@@ -409,8 +411,13 @@ class GearVRC(gatt.Device):
 
             self._updatecounts += 1
             self._deltaTime = self._currentTime - self._lastTime
-            self._lastTime = self._currentTime
-            self.logger.log(logging.INFO, "Update rate: {}".format(self._deltaTime))
+            self._lastTime = copy(self._currentTime)
+            str = "Update rate: {}, fps: {}\n".format(self._deltaTime, self.fps)
+
+            if (self._currentTime - self._lastFPSTime) >= 1.0:
+                self._lastFPSTime = copy(self._currentTime)
+                self.fps = copy(self._updatecounts)
+                self._updatecounts = 0
 
             # If update rate too slow make sure we have VR Mode enabled
             if self._deltaTime > self._updateTime: 
@@ -431,7 +438,7 @@ class GearVRC(gatt.Device):
             self.sensorTime = (struct.unpack('<I', value[0:4])[0] & 0xFFFFFFFF) /1000000.
             self.aTime      = (struct.unpack('<I', value[16:20])[0] & 0xFFFFFFFF) /1000000.
             self.bTime      = (struct.unpack('<I', value[32:36])[0] & 0xFFFFFFFF) /1000000.
-            self.logger.log(logging.INFO, "Time: {:10.6f}, {:10.6f}, {:10.6f}".format(self.sensorTime, self.aTime, self.bTime))
+            str += "Time: {:10.6f}, {:10.6f}, {:10.6f}".format(self.sensorTime, self.aTime, self.bTime)
 
             # Touchpad
             #
@@ -443,7 +450,7 @@ class GearVRC(gatt.Device):
             self.axisX     = ((value[54] & 0xF) << 6) + ((value[55] & 0xFC) >> 2) & 0x3FF
             self.axisY     = ((value[55] & 0x3) << 8) + ((value[56] & 0xFF) >> 0) & 0x3FF
 
-            self.logger.log(logging.INFO, "Touchpad Position: {}, {}".format(self.axisX, self.axisY))
+            str += "Touchpad Position: {}, {}".format(self.axisX, self.axisY)
 
             # IMU
             #
@@ -469,34 +476,34 @@ class GearVRC(gatt.Device):
             self.azimuth = math.atan2(self.magY,self.magX)*180./math.pi
             if self.azimuth < 0: self.azimuth +=180.
 
-            self.logger.log(logging.INFO, "Accel {:5.2f} {:5.2f} {:5.2f} ".format(self.accelX,self.accelY,self.accelZ))
-            self.logger.log(logging.INFO, "Mag   {:5.2f} {:5.2f} {:5.2f} ".format(self.magX,self.magY,self.magZ))
-            self.logger.log(logging.INFO, "Gyro  {:5.2f} {:5.2f} {:5.2f} ".format(self.gyroX,self.gyroY,self.gyroZ))
-            self.logger.log(logging.INFO, "Azimuth  {:6.2f}  ".format(self.azimuth))
+            str += "Accel {:5.2f} {:5.2f} {:5.2f} \n".format(self.accelX,self.accelY,self.accelZ)
+            str += "Mag   {:5.2f} {:5.2f} {:5.2f} \n".format(self.magX,self.magY,self.magZ)
+            str += "Gyro  {:5.2f} {:5.2f} {:5.2f} \n".format(self.gyroX,self.gyroY,self.gyroZ)
+            str += "Azimuth  {:6.2f}  \n".format(self.azimuth)
 
-            self._madgwick.Dt = self._deltaTime
-            if self._firstTime:
-                # obtain estimate of attitude
-                self.previous_attitude = self._tilt.estimate(
-                    acc=np.array([self.accelX,self.accelY,self.accelZ]),
-                    mag=np.array([self.magX,  self.magY,  self.magZ])
-                )
-                self._firstTime =  False
-            else:
-                # compute attitude
-                self.attitude = self._madgwick.updateMARG(
-                    self.previous_attitude, 
-                    acc=np.array([self.accelX,self.accelY,self.accelZ]), 
-                    gyr=np.array([self.gyroX, self.gyroY, self.gyroZ]), 
-                    mag=np.array([self.magX,  self.magY,  self.magZ]) 
-                )
-                # [phi, theta, psi] = self.attitude.to_angles()
-                self.previous_attidude = self.attitude
+            # self._madgwick.Dt = self._deltaTime
+            # if self._firstTime:
+            #     # obtain estimate of attitude
+            #     self.previous_attitude = self._tilt.estimate(
+            #         acc=np.array([self.accelX,self.accelY,self.accelZ]),
+            #         mag=np.array([self.magX,  self.magY,  self.magZ])
+            #     )
+            #     self._firstTime =  False
+            # else:
+            #     # compute attitude
+            #     self.attitude = self._madgwick.updateMARG(
+            #         self.previous_attitude, 
+            #         acc=np.array([self.accelX,self.accelY,self.accelZ]), 
+            #         gyr=np.array([self.gyroX, self.gyroY, self.gyroZ]), 
+            #         mag=np.array([self.magX,  self.magY,  self.magZ]) 
+            #     )
+            #     # [phi, theta, psi] = self.attitude.to_angles()
+            #     self.previous_attidude = self.attitude
 
             # Temperature
             #
             self.temperature = value[57]
-            self.logger.log(logging.INFO, "Temperature: {} ".format(self.temperature))
+            str += "Temperature: {} \n".format(self.temperature)
 
             # Buttons
             #
@@ -551,21 +558,21 @@ class GearVRC(gatt.Device):
                         self._left   = False
                         self._bottom = False
                         self._right  = True
-                self.logger.log(logging.INFO, "Wheel Position: {}".format(self._wheelPos))
+                str += "Wheel Position: {}\n".format(self._wheelPos)
 
             if (self.touchpadButton == True):
                 if (self._outerCircle ==  True):
                     if self._top:
-                        self.logger.log(logging.INFO, "Wheel Click Top")
+                        str += "Wheel Click Top\n"
                     if self._bottom:
-                        self.logger.log(logging.INFO, "Wheel Click Bottom")
+                        str += "Wheel Click Bottom\n"
                     if self._left:
-                        self.logger.log(logging.INFO, "Wheel Click Left")
+                        str += "Wheel Click Left\n"
                     if self._right:
-                        self.logger.log(logging.INFO, "Wheel Click Right")
+                        str += "Wheel Click Right\n"
                 else:
                     self._useWheel = not self._useWheel # toggle wheel
-                    self.logger.log(logging.INFO, "Wheel: {} Touchpad: {}".format("enabled" if self._useWheel else "disabled", "enabled" if not self._useWheel else "disabled"))
+                    str += "Wheel: {} Touchpad: {}\n".format("enabled" if self._useWheel else "disabled", "enabled" if not self._useWheel else "disabled")
 
             if (self._useWheel):
                 self._delta_wheelPos = self._previous_wheelPos - self._wheelPos
@@ -580,11 +587,11 @@ class GearVRC(gatt.Device):
 
                 if (self._delta_wheelPos > 0):
                     # rotating clock wise
-                    self.logger.log(logging.INFO, "Wheel rotating counter-clockwise")
+                    str += "Wheel rotating counter-clockwise\n"
 
                 elif (self._delta_wheelPos < 0):
                     # rotating counter clock wise
-                    self.logger.log(logging.INFO, "Wheel rotating clockwise")
+                    str += "Wheel rotating clockwise\n"
 
             # Movement direction on touchpad
             if (not self._useWheel):
@@ -592,72 +599,74 @@ class GearVRC(gatt.Device):
                 self._delta_Y = self.axisY - self._previous_axisY
                 self._previous_axisX = self.axisX
                 self._previous_axisY = self.axisY
-                self.logger.log(logging.INFO, "Delta X {}".format(self._delta_X))
-                self.logger.log(logging.INFO, "Delta Y {}".format(self._delta_Y))
+                str += "Delta X {}\n".format(self._delta_X)
+                str += "Delta Y {}\n".format(self._delta_Y)
                 if (abs(self._delta_X) < 50): # disregrad large jumps (sldiing along the surface)
                     self._absX += self._delta_X 
                     self._absX  = clamp(self._absX, MINXTOUCH, MAXXTOUCH)
-                    self.logger.log(logging.INFO, "Absolute X {}".format(self._absX))
+                    str += "Absolute X {}\n".format(self._absX)
                     if (self._delta_X > 0):
                         self._dirUp = True
                         self._dirDown = False
-                        self.logger.log(logging.INFO, "Touchpad Right")
+                        str += "Touchpad Right\n"
                     elif (self._delta_X < 0):
                         self._dirDown = True
                         self._dirUp = False
-                        self.logger.log(logging.INFO, "Touchpad Left")
+                        str += "Touchpad Left\n"
                     else:
                         self._dirDown = False
                         self._dirUp = False                        
                 if (abs(self._delta_Y) < 50): # disregrad large jumps
                     self._absY += self._delta_Y 
                     self._absY  = clamp(self._absY, MINYTOUCH, MAXYTOUCH)
-                    self.logger.log(logging.INFO, "Absolute Y {}".format(self._absY))
+                    str += "Absolute Y {}\n".format(self._absY)
                     if (self._delta_Y > 0):
                         self._dirRight = True
                         self._dirLeft = False
-                        self.logger.log(logging.INFO, "Touchpad Down")
+                        str += "Touchpad Down"
                     elif (self._delta_Y < 0):
                         self._dirLeft = True
                         self._dirRight = False
-                        self.logger.log(logging.INFO, "Touchpad Up")
+                        str += "Touchpad Up\n"
                     else:
                         self._dirLeft = False
                         self._dirRight = False
 
             if (self.triggerButton == True):
-                self.logger.log(logging.INFO, "Trigger Button: pressed")
+                str += "Trigger Button: pressed\n"
 
             if (self.homeButton == True):
                 if (self._useVol == True):
-                    self.logger.log(logging.INFO, "Home pushed while chaning Volume, disable Home and Back options")
+                    str += "Home pushed while chaning Volume, disable Home and Back options\n"
                     self._useVol = False
                 elif ((not self._useWheel) == True):
-                    self.logger.log(logging.INFO, "Home pushed while using Touchpad")
+                    str += "Home pushed while using Touchpad\n"
                 elif (self._useWheel == True):
-                    self.logger.log(logging.INFO, "Home pushed while using Wheel, sitching to Touch Pad mode")
+                    str += "Home pushed while using Wheel, sitching to Touch Pad mode\n"
                     self._useWheel = False
 
             if (self.backButton == True):
                 if (self._useVol == True):
-                    self.logger.log(logging.INFO, "Back pushed while chaning Volume")
+                    str += "Back pushed while chaning Volume\n"
                 elif ((not self._useWheel) == True):
-                    self.logger.log(logging.INFO, "Back pushed while using Touchpad")
+                    str += "Back pushed while using Touchpad\n"
                 elif (self._useWheel == True):
-                    self.logger.log(logging.INFO, "Back pushed while using Wheel")
+                    str += "Back pushed while using Wheel\n"
                 else:
-                    self.logger.log(logging.INFO, "Back pushed")
+                    str += "Back pushed\n"
 
             if (self.volumeDownButton == True):
                 self._useVol == True
-                self.logger.log(logging.INFO, "Volume Down: pushed")
+                str += "Volume Down: pushed\n"
 
             if (self.volumeUpButton == True):
                 self._usevol == True
-                self.logger.log(logging.INFO, "Volume Up: pushed")
+                str += "Volume Up: pushed\n"
 
             if (self.noButton == True):
                 pass
+
+            print(str)
 
         # Device Information
         # elif (characteristic == self.general_devicename_characteristic):
@@ -725,7 +734,7 @@ def main():
 
     logger.log(logging.INFO, "Samsung Gear VR Controller mapper running ...")
 
-    gearvrc = GearVRC(mac_address=MACADDRESS, manager=device_manager, logger=logger, VRMode=True, auto_reconnect=True)
+    gearvrc = GearVRC(mac_address=MACADDRESS, manager=device_manager, logger=logger, VRMode=False, auto_reconnect=True)
 
     gearvrc.connect()
 

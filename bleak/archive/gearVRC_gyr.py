@@ -219,7 +219,9 @@ class gearVRC:
         self.magX                   = 0.    # IMU Magnetometer
         self.magY                   = 0.    #
         self.magZ                   = 0.    #
-        
+
+        self.gyr_average            = Vector3D(0,0,0)
+
         # Touchpad
         self.touchX                 = 0.    # Touchpad Location (up/down)
         self.touchY                 = 0.    # (left/right)
@@ -313,7 +315,7 @@ class gearVRC:
         self.acc_offset          = Vector3D(0.,0.,0.)
         self.acc_scale           = Vector3D(1.,1.,1.)
         self.acc_crosscorr       = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
-        self.gyr_offset          = Vector3D(-0.0104,-0.0135,-0.0391)
+        self.gyr_offset          = Vector3D(-0.013,-0.010,+0.037)
         self.gyr_scale           = Vector3D(1.,1.,1.)
         self.gyr_crosscorr       = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
         self.mag_offset          = Vector3D(223,48.25,-35.5)
@@ -323,7 +325,6 @@ class gearVRC:
         self.acc = Vector3D(0.,0.,0.)
         self.gyr = Vector3D(0.,0.,0.)
         self.mag = Vector3D(0.,0.,0.)
-        self.gyr_average = Vector3D(0.,0.,0.)
 
         # Attitude fusion
         self.AHRS                = Madgwick()
@@ -992,14 +993,14 @@ class gearVRC:
                     # Mag is not in acceptable range
                     self.q = self.AHRS.update(acc=self.acc,gyr=self.gyr,mag=None,dt=-1)
                 else:
-                    self.q = self.AHRS.update(acc=self.acc,gyr=self.gyr,mag=None,dt=-1)
+                    self.q = self.AHRS.update(acc=self.acc,gyr=self.gyr,mag=self.mag,dt=-1)
 
             else:
                 if (self.mag.norm >  MAGFIELD_MAX) or (self.mag.norm < MAGFIELD_MIN):
                     # Mag not in acceptable range
                     self.q = self.AHRS.update(acc=self.acc,gyr=self.gyr,mag=None,dt=dt)
                 else:
-                    self.q = self.AHRS.update(acc=self.acc,gyr=self.gyr,mag=None,dt=dt)
+                    self.q = self.AHRS.update(acc=self.acc,gyr=self.gyr,mag=self.mag,dt=dt)
 
 
             # stuck here
@@ -1042,6 +1043,7 @@ class gearVRC:
         Report latest fused data
         '''
         self.logger.log(logging.INFO, 'Starting reporting')
+
         while not self.finish_up.is_set():
 
             currentTime = time.perf_counter()
@@ -1067,8 +1069,6 @@ class gearVRC:
 
             str += 'Data    {:>10.6f}, fps {:>3d}\n'.format(self.data_deltaTime*1000.,    self.data_fps)
             str += 'Report  {:>10.6f}, fps {:>3d}\n'.format(self.report_deltaTime*1000.,  self.report_fps)
-            str += 'Virtual {:>10.6f}, fps {:>3d}\n'.format(self.virtual_deltaTime*1000., self.virtual_fps)
-            str += 'Fusion  {:>10.6f}, fps {:>3d}\n'.format(self.fusion_deltaTime*1000.,  self.fusion_fps)
 
             str += '-------------------------------------------------\n'
 
@@ -1077,49 +1077,10 @@ class gearVRC:
             str += 'Accel {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.accX,self.accY,self.accZ)
             str += 'Mag   {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.magX,self.magY,self.magZ)
             str += 'Gyro  {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.gyrX,self.gyrY,self.gyrZ)
+            
             str += 'Gyro M{:>8.5f} {:>8.5f} {:>8.5f}\n'.format(self.gyr_average.x, self.gyr_average.y, self.gyr_average.z )
 
             str += '-------------------------------------------------\n'
-            
-            str += 'Trig {} Touch {} Back {} Home {}, Vol+ {} Vol- {} None: {}\n'.format(
-                                                'Y' if self.trigger     else 'N', 
-                                                'Y' if self.touch       else 'N', 
-                                                'Y' if self.back        else 'N',
-                                                'Y' if self.home        else 'N',
-                                                'Y' if self.volume_up   else 'N',
-                                                'Y' if self.volume_down else 'N',
-                                                'Y' if self.noButton    else 'N')
-
-            str += '-------------------------------------------------\n'
-
-            str += 'TPad:  {:>3d},{:>3d}\n'.format(self.touchX, self.touchY)
-
-            str += 'VPad:  {:>3d},{:>3d} U{} D{} L{} R{}\n'.format(
-                                                self.absX, self.absY,
-                                                'Y' if self.dirUp    else 'N',
-                                                'Y' if self.dirDown  else 'N',
-                                                'Y' if self.dirLeft  else 'N',
-                                                'Y' if self.dirRight else 'N')
-            
-            str += 'Wheel: {:>3d}:{:>3d} T{} B{} L{} R{} C{} R:{}\n'.format(
-                                                self.wheelPos, self.delta_wheelPos,
-                                                'Y' if self.top    else 'N',
-                                                'Y' if self.bottom else 'N',
-                                                'Y' if self.left   else 'N',
-                                                'Y' if self.right  else 'N',
-                                                'Y' if self.center else 'N', 
-                                                (' C' if self.clockwise else 'CC') if self.isRotating else '__')
-
-            str += '-------------------------------------------------\n'
-            
-            str += 'Acc {:>8.3f} {:>8.3f} {:>8.3f} N{:>8.3f}\n'.format(self.acc.x,self.acc.y,self.acc.z,self.acc.norm)
-            str += 'Mag {:>8.3f} {:>8.3f} {:>8.3f} N{:>8.3f}\n'.format(self.mag.x,self.mag.y,self.mag.z,self.mag.norm)
-            str += 'Gyr {:>8.3f} {:>8.3f} {:>8.3f} RPM{:>8.3f}\n'.format(self.gyr.x*RAD2DEG,self.gyr.y*RAD2DEG,self.gyr.z*RAD2DEG,self.gyr.norm*60/TWOPI)
-            str += 'Euler: R{:>6.1f} P{:>6.1f} Y{:>6.1f}, Heading {:>4.0f}\n'.format(
-                                            self.rpy.x*RAD2DEG, self.rpy.y*RAD2DEG, self.rpy.z*RAD2DEG, 
-                                            self.heading*RAD2DEG)
-            str += 'Q:     W{:>6.3f} X{:>6.3f} Y{:>6.3f} Z{:>6.3f}\n'.format(
-                                            self.q.w, self.q.x, self.q.y, self.q.z)
 
             print(str, flush=True)
 
@@ -1151,13 +1112,11 @@ async def main(args: argparse.Namespace):
 
     connection_task = asyncio.create_task(controller.update_connect())      # remain connected, will not terminate
     keepalive_task  = asyncio.create_task(controller.keep_alive())          # keep sensor alive, will not terminate
-    virtual_task    = asyncio.create_task(controller.update_virtual())      # update wheel, will not terminate
-    fusion_task     = asyncio.create_task(controller.update_fusion())       # update pose, will not terminate
     if args.report:
         reporting_task  = asyncio.create_task(controller.update_report())   # report new data, will not terminate
-        tasks = [connection_task, keepalive_task, virtual_task, fusion_task, reporting_task ]
+        tasks = [connection_task, keepalive_task, reporting_task ]
     else:
-        tasks = [connection_task, keepalive_task, virtual_task, fusion_task]
+        tasks = [connection_task, keepalive_task]
  
     # Set up a Control-C handler to gracefully stop the program
     # This mechanism is only available in Unix

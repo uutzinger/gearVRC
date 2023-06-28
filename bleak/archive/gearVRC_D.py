@@ -146,13 +146,12 @@ def calibrate(data:Vector3D, offset:Vector3D, scale:Vector3D, crosscorr=None):
 
 class gearVRC:
             
-    def __init__(self, device_name=None, device_address = None, logger=None, VRMode=False) -> None:
+    def __init__(self, device_name=None, logger=None, VRMode=False) -> None:
 
         # super(gearVRC, self).__init__()
 
         # Bluetooth device description
         self.device_name                        = device_name
-        self.device_address                     = device_address
   
         # Bluetooth device and client
         self._device                            = None
@@ -313,7 +312,7 @@ class gearVRC:
         self.acc_offset          = Vector3D(0.,0.,0.)
         self.acc_scale           = Vector3D(1.,1.,1.)
         self.acc_crosscorr       = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
-        self.gyr_offset          = Vector3D(-0.0104,-0.0135,-0.0391)
+        self.gyr_offset          = Vector3D(0.013,0.009,-0.037)
         self.gyr_scale           = Vector3D(1.,1.,1.)
         self.gyr_crosscorr       = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
         self.mag_offset          = Vector3D(223,48.25,-35.5)
@@ -323,7 +322,6 @@ class gearVRC:
         self.acc = Vector3D(0.,0.,0.)
         self.gyr = Vector3D(0.,0.,0.)
         self.mag = Vector3D(0.,0.,0.)
-        self.gyr_average = Vector3D(0.,0.,0.)
 
         # Attitude fusion
         self.AHRS                = Madgwick()
@@ -354,11 +352,9 @@ class gearVRC:
             #################
             # try to find device using its name
             self.logger.log(logging.INFO,'Searching for {}'.format(self.device_name))            
+            # if self._device is None and self.device_name is not None:
             if self.device_name is not None:
-                self._device = await BleakScanner.find_device_by_name(self.device_name, timeout=10.0)
-            if self._device is None:
-                if self.device_address is not None:
-                    self._device = await BleakScanner.find_device_by_address(self.device_address, timeout=10.0)
+                self._device = await BleakScanner.find_device_by_name(self.device_name, timeout=5.0)
 
             # Connect to Device
             ###################
@@ -655,18 +651,18 @@ class gearVRC:
             self.sensorTime = (struct.unpack('<I', data[0:4])[0]   & 0xFFFFFFFF) /1000000.
             self.aTime      = (struct.unpack('<I', data[16:20])[0] & 0xFFFFFFFF) /1000000.
             self.bTime      = (struct.unpack('<I', data[32:36])[0] & 0xFFFFFFFF) /1000000.
-            # self.logger.log(logging.INFO, 'Time: {:10.6f}, {:10.6f}, {:10.6f}'.format(self.sensorTime, self.aTime, self.bTime))
+            # self.logger.log(logging.DEBUG, 'Time: {:10.6f}, {:10.6f}, {:10.6f}'.format(self.sensorTime, self.aTime, self.bTime))
 
-            self.delta_sensorTime     = self.sensorTime - self._previous_sensorTime
-            self.delta_aTime          = self.aTime      - self._previous_aTime
-            self.delta_bTime          = self.bTime      - self._previous_bTime
+            self.delta_sensorTime = self.sensorTime - self._previous_sensorTime
+            self.delta_aTime      = self.aTime      - self._previous_aTime
+            self.delta_bTime      = self.bTime      - self._previous_bTime
             self._previous_sensorTime = copy(self.sensorTime)
-            self._previous_aTime      = copy(self.aTime)
-            self._previous_bTime      = copy(self.bTime)
-            # self.logger.log(logging.INFO, 'Dt:   {:>10.6f}, {:>10.6f}, {:>10.6f}'.format(self.delta_sensorTime, self.delta_aTime, self.delta_bTime))
+            self._previous_aTime  = copy(self.aTime)
+            self._previous_bTime  = copy(self.bTime)
 
             # Temperature:
             self.temperature = data[57]
+            # self.logger.log(logging.DEBUG, 'Temperature: {} '.format(self.temperature))
 
             # Buttons
             self.trigger     = True if ((data[58] &  1) ==  1) else False
@@ -677,6 +673,13 @@ class gearVRC:
             self.volume_down = True if ((data[58] & 32) == 32) else False
             self.noButton    = True if ((data[58] & 64) == 64) else False
 
+            # self.logger.log(logging.DEBUG, 'Back button is {}'.format('pushed' if self.back else 'released'))
+            # self.logger.log(logging.DEBUG, 'Home button is {}'.format('pushed' if self.home else 'released'))
+            # self.logger.log(logging.DEBUG, 'Touchpad button is {}'.format('pushed' if self.touch else 'released'))
+            # self.logger.log(logging.DEBUG, 'Trigger button is {}'.format('pushed' if self.trigger else 'released'))
+            # self.logger.log(logging.DEBUG, 'Volume up button is {}'.format('pushed' if self.volume_up else 'released'))
+            # self.logger.log(logging.DEBUG, 'Volume down button is {}'.format('pushed' if self.volume_down else 'released'))
+            # self.logger.log(logging.DEBUG, '{} button is pushed'.format('No' if self.noButton else 'A'))
 
             # Touch pad:
             #  Max observed value = 315
@@ -686,24 +689,66 @@ class gearVRC:
             #  X axis is left-right 
             self.touchX     = ((data[54] & 0xF) << 6) + ((data[55] & 0xFC) >> 2) & 0x3FF
             self.touchY     = ((data[55] & 0x3) << 8) + ((data[56] & 0xFF) >> 0) & 0x3FF
+            # self.logger.log(logging.DEBUG, 'Touchpad Position: {}, {}'.format(self.touchX, self.touchY))
 
             # IMU:
             #  Accelerometer, Gyroscope, Magnetometer
             #  Magnetometer often has large hard iron offset
             #
-            self.accX = struct.unpack('<h', data[4:6])[0]   * 0.00478840332  # 10000.0 * 9.80665 / 2048 / 10000.0       # m**2/s
-            self.accY = struct.unpack('<h', data[6:8])[0]   * 0.00478840332  #
-            self.accZ = struct.unpack('<h', data[8:10])[0]  * 0.00478840332  #
-            self.gyrX = struct.unpack('<h', data[10:12])[0] * 0.001221791529 # 10000.0 * 0.017453292 / 14.285 / 1000.0 / 10. # rad/s
-            self.gyrY = struct.unpack('<h', data[12:14])[0] * 0.001221791529 #
-            self.gyrZ = struct.unpack('<h', data[14:16])[0] * 0.001221791529 #
-            self.magY = struct.unpack('<h', data[48:50])[0] * 0.06           # micro Tesla?, earth mag field 25..65 muTesla
-            self.magX = struct.unpack('<h', data[50:52])[0] * 0.06           #
-            self.magZ = struct.unpack('<h', data[52:54])[0] * 0.06           #
+            # Rearrange the Axis
+            #
+            # It is assumed the data is organized consecutvely x,y,z
+            # fields for acc,gyr,mag were determiend by looking at the 60 byte data 
+            #
+            # It was found:
+            # acc.x points to the left/west
+            # acc.y points towards user
+            # acc.z points downwards
+            # -Y-X+Z
+            # NYNXPZ
+            #
+            # mag.x points to the right/east
+            # mag.y points to the user
+            # mag.z points downwards
+            # -Y+X+Z
+            # NYPXPZ
+            #
+            # gyr.x is counter clockwise around x
+            # gyr.y is counter clockwise around y
+            # gyr.z is counter clockwise around z
+            # +Y+X-Z
+            # PYPXNZ
+            # 
+            # We want for Norht East Down Orientation:
+            #   acc.x pointing forward      -acc.y
+            #   acc.y pointing to the right -acc.x
+            #   acc.z pointing downwards     acc.z
+            #   mag.x pointign forward      -mag.y
+            #   mag.y pointing to the right  mag.x
+            #   mag.z pointing down          mag.z
+            #   gyr.x clock wise forward     gyr.y
+            #   gyr.y clockwise to the right gyr.x
+            #   gyr.z clockwise downwards   -gyr.z
 
-            self.gyr=Vector3D(self.gyrX, self.gyrY, self.gyrZ)
-            self.gyr_average = 0.99*self.gyr_average + 0.01*self.gyr
-
+            # x sensor
+            self.accY = - struct.unpack('<h', data[4:6])[0]   * 0.00478840332  # 10000.0 * 9.80665 / 2048 / 10000.0       # m**2/s
+            # y sensor
+            self.accX = - struct.unpack('<h', data[6:8])[0]   * 0.00478840332  #
+            # z sensor
+            self.accZ =   struct.unpack('<h', data[8:10])[0]  * 0.00478840332  #
+            # x sensor
+            self.gyrY = - struct.unpack('<h', data[10:12])[0] * 0.001221791529  # 10000.0 * 0.017453292 / 14.285 / 1000.0 / 10. # rad/s
+            # y sensor
+            self.gyrX = - struct.unpack('<h', data[12:14])[0] * 0.001221791529  #
+            # z sensor
+            self.gyrZ =   struct.unpack('<h', data[14:16])[0] * 0.001221791529  #
+            # x sensor
+            self.magY =   struct.unpack('<h', data[48:50])[0] * 0.06           # micro Tesla?, earth mag field 25..65 muTesla
+            # y sensor
+            self.magX = - struct.unpack('<h', data[50:52])[0] * 0.06           #
+            # z sensor
+            self.magZ =   struct.unpack('<h', data[52:54])[0] * 0.06           #
+            
             self.dataAvailable.set()
             self.reportingDataAvailable.set()
 
@@ -714,6 +759,7 @@ class gearVRC:
 
     def handle_batteryData(self, characteristic: BleakGATTCharacteristic, data: bytearray):
         self.battery_level = int.from_bytes(data,'big')
+        # self.logger.log(logging.DEBUG,'Battery level: {}'.format(self.battery_level))
 
     async def start_sensor(self, VRMode):
         '''Start the sensors'''
@@ -855,6 +901,7 @@ class gearVRC:
                 
                     # Virtual Pad
                     #  Detects scrolling of touchpad to create absolute 'mouse' position, allowing to reach larger field than touchpad allone        
+
                     self.isRotating = False
                     self.top        = False
                     self.left       = False
@@ -868,18 +915,23 @@ class gearVRC:
                     self.deltaY = self.touchY - self._previous_touchY
                     self._previous_touchX = copy(self.touchX)
                     self._previous_touchY = copy(self.touchY)
+                    # self.logger.log(logging.DEBUG, 'Delta X {}'.format(self.deltaX))
+                    # self.logger.log(logging.DEBUG, 'Delta Y {}'.format(self.deltaY))
                     if (abs(self.deltaX) < 50) and (abs(self.deltaY) < 50): # disregard large jumps such as when lifting finger between scrolling
                         self.absX += self.deltaX 
                         self.absY += self.deltaY 
                         self.absX  = clamp(self.absX, MINXTOUCH, MAXXTOUCH)
                         self.absY  = clamp(self.absY, MINYTOUCH, MAXYTOUCH)
+                        # self.logger.log(logging.DEBUG, 'Absolute X {} Y {}'.format(self.absX, self.absY))
                         # Left or Right?
                         if (self.deltaX > 0):
                             self.dirRight = True
                             self.dirLeft  = False
+                            # self.logger.log(logging.DEBUG, 'Touchpad Right')
                         elif (self.deltaX < 0):
                             self.dirLeft  = True
                             self.dirRight = False
+                            # self.logger.log(logging.DEBUG, 'Touchpad Left')
                         else:
                             self.dirLeft  = False
                             self.dirRight = False
@@ -887,9 +939,11 @@ class gearVRC:
                         if (self.deltaY > 0):
                             self.dirDown  = True
                             self.dirUp    = False
+                            # self.logger.log(logging.DEBUG, 'Touchpad Down')
                         elif (self.deltaY < 0):
                             self.dirUp    = True
                             self._dirDown = False
+                            # self.logger.log(logging.DEBUG, 'Touchpad Up')
                         else:
                             self.dirUp    = False
                             self.dirDown  = False
@@ -921,7 +975,7 @@ class gearVRC:
         self.logger.log(logging.INFO, 'Fusion started')
 
         while not self.finish_up.is_set():
-
+            # self.logger.log(logging.DEBUG, 'Waiting for sensor data')
             await self.dataAvailable.wait()
             self.dataAvailable.clear()       # This is primary consumer, one of the tasks will need to clear it
 
@@ -942,44 +996,9 @@ class gearVRC:
             dt = self.sensorTime - self._previous_fusionTime # time interval between sensor data
             self._previous_fusionTime = copy(self.sensorTime) # keep track of last sensor time
 
-            # Rearrange the Axis
-            #
-            # It is assumed the data is organized consecutvely x,y,z
-            # fields for acc,gyr,mag were determiend by looking at the 60 byte data 
-            #
-            # It was found:
-            # acc.x points to the left/west
-            # acc.y points towards user
-            # acc.z points downwards
-            # -Y-X+Z
-            # NYNXPZ
-            #
-            # mag.x points to the right/east
-            # mag.y points to the user
-            # mag.z points downwards
-            # -Y+X+Z
-            # NYPXPZ
-            #
-            # gyr.x is counter clockwise around x
-            # gyr.y is counter clockwise around y
-            # gyr.z is counter clockwise around z
-            # +Y+X-Z
-            # PYPXNZ
-            # 
-            # We want for Norht East Down Orientation:
-            #   acc.x pointing forward      -acc.y
-            #   acc.y pointing to the right -acc.x
-            #   acc.z pointing downwards     acc.z
-            #   mag.x pointign forward      -mag.y
-            #   mag.y pointing to the right  mag.x
-            #   mag.z pointing down          mag.z
-            #   gyr.x clock wise forward     gyr.y
-            #   gyr.y clockwise to the right gyr.x
-            #   gyr.z clockwise downwards   -gyr.z
-
-            self.acc = Vector3D(-self.accY, -self.accX,  self.accZ)
-            self.gyr = Vector3D( self.gyrY,  self.gyrX, -self.gyrZ)
-            self.mag = Vector3D(-self.magY,  self.magX,  self.magZ)
+            self.acc = Vector3D(self.accX,self.accY,self.accZ)
+            self.gyr = Vector3D(self.gyrX,self.gyrY,self.gyrZ)
+            self.mag = Vector3D(self.magX,self.magY,self.magZ)
 
             # Calibrate IMU Data
             self.acc = calibrate(data=self.acc, offset=self.acc_offset, scale=self.acc_scale, crosscorr=self.acc_crosscorr)
@@ -1008,7 +1027,7 @@ class gearVRC:
 
             self.fusedDataAvailable.set()
 
-            # Dont wait here, we want to fuse every IMU reading
+            # Dont wait, we want to fuse every IMU reading
 
         self.logger.log(logging.INFO, 'Fusion stoped')
 
@@ -1031,7 +1050,7 @@ class gearVRC:
                 sleepTime=KEEPALIVEINTERVAL
             else:
                 if self.sensorStarted.is_set(): self.logger.log(logging.DEBUG,'Cound not send Keep alive')
-                # do not report keep alive issues if sensor is not yet running            
+                # do not report keep alive issues if sensor was not started            
                 sleepTime=1
             await asyncio.sleep(sleepTime)
         
@@ -1046,9 +1065,10 @@ class gearVRC:
 
             currentTime = time.perf_counter()
 
+            # self.logger.log(logging.DEBUG, 'Waiting for fused data')
             await self.reportingDataAvailable.wait()
             self.reportingDataAvailable.clear()
-
+            # self.logger.log(logging.DEBUG, 'IMU data available')
             self.report_deltaTime = currentTime - self._previous_reportUpdate
             self._previous_reportUpdate = copy(currentTime)
 
@@ -1077,8 +1097,6 @@ class gearVRC:
             str += 'Accel {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.accX,self.accY,self.accZ)
             str += 'Mag   {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.magX,self.magY,self.magZ)
             str += 'Gyro  {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.gyrX,self.gyrY,self.gyrZ)
-            str += 'Gyro M{:>8.5f} {:>8.5f} {:>8.5f}\n'.format(self.gyr_average.x, self.gyr_average.y, self.gyr_average.z )
-
             str += '-------------------------------------------------\n'
             
             str += 'Trig {} Touch {} Back {} Home {}, Vol+ {} Vol- {} None: {}\n'.format(
@@ -1147,7 +1165,7 @@ async def main(args: argparse.Namespace):
     logger = logging.getLogger(__name__)
 
     # gearVRC Controller
-    controller = gearVRC(device_name=args.name, device_address=args.address, logger=logger, VRMode=args.vrmode)
+    controller = gearVRC(device_name=args.name, logger=logger, VRMode=args.vrmode)
 
     connection_task = asyncio.create_task(controller.update_connect())      # remain connected, will not terminate
     keepalive_task  = asyncio.create_task(controller.keep_alive())          # keep sensor alive, will not terminate
@@ -1183,15 +1201,7 @@ if __name__ == '__main__':
         '--name',
         metavar='<name>',
         help='the name of the bluetooth device to connect to',
-        default = DEVICE_NAME
-    )
-
-    device_group.add_argument(
-        '-a',
-        '--address',
-        metavar='<address>',
-        help='the mac address of the bluetooth device to connect to',
-        default = DEVICE_MAC
+        default = 'Gear VR Controller(17DB)'
     )
 
     parser.add_argument(
