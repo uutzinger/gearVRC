@@ -221,7 +221,7 @@ class gearVRC:
         self.magZ                   = 0.    #
         
         # Touchpad
-        self.touchX                 = 0.    # Touchpad Location (up/down)
+        self.touchX                 = 0.    # Touchpad Location (up/down) 
         self.touchY                 = 0.    # (left/right)
         
         # Other
