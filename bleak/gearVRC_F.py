@@ -33,6 +33,7 @@ import os
 import uvloop
 from copy import copy
 import serial
+import re
 
 from bleak      import BleakClient, BleakScanner
 from bleak.exc  import BleakError
@@ -1158,61 +1159,68 @@ class gearVRC:
     async def update_serial(self, port, baudrate=115200):
         '''
         Report latest fused data
+        This is formatted to respond to freeIMU calibration GUI software
         '''
         self.logger.log(logging.INFO, 'Starting serial')
         ser = serial.Serial(port, baudrate, timeout=0.1)
         
         while not self.finish_up.is_set():
 
-            currentTime = time.perf_counter()
-
-            await self.dataAvailable.wait()
-
-            self.serial_deltaTime = currentTime - self._previous_serialUpdate
-            self._previous_serialUpdate = copy(currentTime)
-
-            self._serial_updateCounts += 1
-            if (currentTime - self._serial_lastTimeFPS)>= 1.:
-                self.serial_fps = self._serial_updateCounts
-                self._serial_lastTimeFPS = copy(currentTime)
-                self._serial_updateCounts = 0
-
             line = ser.readline().decode().strip() # removes leading and trailing whitespaces
 
             if line: # if data was received line is true, otherwise timeout occurred
                 
-                if len(line) > 3:
-                    self.logging.log(logging.ERROR,'Received {} characters, expecting 3 or less'.format(len(line)))
-                    # received garbage, ignore
+                if 'v' in line: # version number request
 
-                elif 'v' in line: # version number request
                     if ser.is_open:
                         ser.write("v1.0.0\r\n".encode('utf-8'))
                     else:
                         self.logging.log(logging.ERROR,'Serial port {} is not open'.format(port))
                 
-                elif 'b' in line:
-                    accX_hex=float_to_hex(self.acc.x)
-                    accY_hex=float_to_hex(self.acc.y)
-                    accZ_hex=float_to_hex(self.acc.z)
-
-                    gyrX_hex=float_to_hex(self.gyr.x)
-                    gyrY_hex=float_to_hex(self.gyr.y)
-                    gyrZ_hex=float_to_hex(self.gyr.z)
-
-                    magX_hex=float_to_hex(self.mag.x)
-                    magY_hex=float_to_hex(self.mag.y)
-                    magZ_hex=float_to_hex(self.mag.z)
-
-                    # acc,gyr,mag
-                    str = accX_hex+accY_hex+accZ_hex+gyrX_hex+gyrY_hex+gyrZ_hex+magX_hex+magY_hex+magZ_hex+'\r\n'
-                    if ser.is_open:
-                        ser.write(str.encode('utf-8'))
-                    else:
-                        self.logging.log(logging.ERROR,'Serial port {} is not open'.format(port))
-
                 else:
-                    pass # unknown command
+                    # check if b command was present
+                    # extract number of readings requested
+                    match_b = re.search(r'b(\d+)', line)
+                    if match_b:
+                        count = int(match_b.group(1))
+                        
+                        startTime = time.perf_counter()
+                        self._previous_serialUpdate = copy(startTime)
+                                                
+                        for i in range(count):
+                            currentTime = time.perf_counter()
+
+                            await self.dataAvailable.wait()
+
+                            self.serial_deltaTime = currentTime - self._previous_serialUpdate
+                            self._previous_serialUpdate = copy(currentTime)
+
+                            self._serial_updateCounts += 1
+                        
+                            accX_hex=float_to_hex(self.acc.x)
+                            accY_hex=float_to_hex(self.acc.y)
+                            accZ_hex=float_to_hex(self.acc.z)
+
+                            gyrX_hex=float_to_hex(self.gyr.x)
+                            gyrY_hex=float_to_hex(self.gyr.y)
+                            gyrZ_hex=float_to_hex(self.gyr.z)
+
+                            magX_hex=float_to_hex(self.mag.x)
+                            magY_hex=float_to_hex(self.mag.y)
+                            magZ_hex=float_to_hex(self.mag.z)
+
+                            # acc,gyr,mag
+                            str = accX_hex+accY_hex+accZ_hex+gyrX_hex+gyrY_hex+gyrZ_hex+magX_hex+magY_hex+magZ_hex+'\r\n'
+                            if ser.is_open:
+                                ser.write(str.encode('utf-8'))
+                            else:
+                                self.logging.log(logging.ERROR,'Serial port {} is not open'.format(port))
+                    
+                        self.serial_fps = self._serial_updateCounts / (time.perf_counter() - startTime) 
+                        self._serial_updateCounts = 0
+
+                    else:
+                        pass # unknown command
         
         ser.close()
         self.logger.log(logging.INFO, 'Serial stopped')
