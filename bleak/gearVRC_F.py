@@ -32,6 +32,7 @@ import more_itertools as mit
 import os
 import uvloop
 from copy import copy
+import serial
 
 from bleak      import BleakClient, BleakScanner
 from bleak.exc  import BleakError
@@ -120,7 +121,7 @@ def clamp(val, smallest, largest):
     if val > largest: return largest
     return val
 
-def calibrate(data:Vector3D, offset:Vector3D, scale:Vector3D, crosscorr=None):
+def calibrate(data:Vector3D, offset:Vector3D, crosscorr=None):
     ''' 
     IMU calibration
     bias is offset so that 0 is in the middle of the range
@@ -132,13 +133,33 @@ def calibrate(data:Vector3D, offset:Vector3D, scale:Vector3D, crosscorr=None):
     '''
     # Bias
     data -= offset
-    # Scale, assumed pos and neg sensitivity is the same
-    data /= scale
     # Cross Correlation
     if crosscorr is not None:
         data = data.rotate(crosscorr)
 
     return data
+
+def float_to_hex(f):
+    '''Pack float into 8 characters representing '''
+    bytes_ = struct.pack('!f', f)                            # Single precision, big-endian byte order, 4 bytes
+    hex_strings = [format(byte, '02X') for byte in bytes_]   # Convert each byte to a hexadecimal string
+    return ''.join(hex_strings)
+
+def hex_to_float(hex_chars):
+    '''Unpack 8 bytes to float'''
+    hex_bytes = bytes.fromhex(hex_chars)  # Convert hex characters to bytes
+    return struct.unpack('!f', hex_bytes)[0]     
+
+def int_to_hex(n):
+    '''Pack integer to 8 bytes'''
+    bytes_ = n.to_bytes((n.bit_length() + 7) // 8, 'big')  # Convert integer to bytes
+    hex_strings = [format(byte, '02X') for byte in bytes_]           # Convert each byte to a hexadecimal string
+    return ''.join(hex_strings)
+
+def hex_to_int(hex_chars):
+    '''Unpack bytes to integer'''
+    hex_bytes = bytes.fromhex(hex_chars)  # Convert hex characters to bytes
+    return struct.unpack('!i', hex_bytes)[0]
 
 ################################################################
 # gearVRC 
@@ -291,6 +312,13 @@ class gearVRC:
         self._report_updateInterval = REPORTINTERVAL
         self.report_fps             = 0
 
+        self._serial_lastTimeFPS    = time.perf_counter()
+        self._previous_serialUpdate = time.perf_counter()
+        self.serial_deltaTime       = 0.
+        self._serial_updateCounts   = 0
+        self._serial_updateInterval = REPORTINTERVAL
+        self.serial_fps             = 0
+
         #
         if self._VRMode: self._updateTime  = MINIMUPDATETIME
         else:            self._updateTime  = MINIMUPDATETIME
@@ -309,16 +337,13 @@ class gearVRC:
         # In future I will read calibration from file
         #  bias is offset so that 0 is in the middle of the range
         #  scale is gain so that 1 is the maximum value
-        #  cross correlation is cross axis sensitivity
+        #  cross correlation is cross axis sensitivity, diagonal elements are the scale
         self.acc_offset          = Vector3D(0.,0.,0.)
-        self.acc_scale           = Vector3D(1.,1.,1.)
         self.acc_crosscorr       = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
         self.gyr_offset          = Vector3D(-0.0104,-0.0135,-0.0391)
-        self.gyr_scale           = Vector3D(1.,1.,1.)
         self.gyr_crosscorr       = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
         self.mag_offset          = Vector3D(223,48.25,-35.5)
-        self.mag_scale           = Vector3D(1.045,0.961,0.994)
-        self.mag_crosscorr       = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
+        self.mag_crosscorr       = np.array(([1./1.045,0.,0.], [0.,1./0.961,0.], [0.,0.,1./0.994]))
 
         self.acc = Vector3D(0.,0.,0.)
         self.gyr = Vector3D(0.,0.,0.)
@@ -982,9 +1007,9 @@ class gearVRC:
             self.mag = Vector3D(-self.magY,  self.magX,  self.magZ)
 
             # Calibrate IMU Data
-            self.acc = calibrate(data=self.acc, offset=self.acc_offset, scale=self.acc_scale, crosscorr=self.acc_crosscorr)
-            self.mag = calibrate(data=self.mag, offset=self.mag_offset, scale=self.mag_scale, crosscorr=self.mag_crosscorr)
-            self.gyr = calibrate(data=self.gyr, offset=self.gyr_offset, scale=self.gyr_scale, crosscorr=self.gyr_crosscorr)
+            self.acc = calibrate(data=self.acc, offset=self.acc_offset, crosscorr=self.acc_crosscorr)
+            self.mag = calibrate(data=self.mag, offset=self.mag_offset, crosscorr=self.mag_crosscorr)
+            self.gyr = calibrate(data=self.gyr, offset=self.gyr_offset, crosscorr=self.gyr_crosscorr)
 
             if dt > 1.0: 
                 # First run or reconnection, need AHRS algorythem to initilize again
@@ -1128,6 +1153,70 @@ class gearVRC:
             if sleepTime > 0:
                 await asyncio.sleep(sleepTime)
 
+        self.logger.log(logging.INFO, 'Reporting stopped')
+
+    async def update_serial(self, port, baudrate=115200):
+        '''
+        Report latest fused data
+        '''
+        self.logger.log(logging.INFO, 'Starting serial')
+        ser = serial.Serial(port, baudrate, timeout=0.1)
+        
+        while not self.finish_up.is_set():
+
+            currentTime = time.perf_counter()
+
+            await self.dataAvailable.wait()
+
+            self.serial_deltaTime = currentTime - self._previous_serialUpdate
+            self._previous_serialUpdate = copy(currentTime)
+
+            self._serial_updateCounts += 1
+            if (currentTime - self._serial_lastTimeFPS)>= 1.:
+                self.serial_fps = self._serial_updateCounts
+                self._serial_lastTimeFPS = copy(currentTime)
+                self._serial_updateCounts = 0
+
+            line = ser.readline().decode().strip() # removes leading and trailing whitespaces
+
+            if line: # if data was received line is true, otherwise timeout occurred
+                
+                if len(line) > 3:
+                    self.logging.log(logging.ERROR,'Received {} characters, expecting 3 or less'.format(len(line)))
+                    # received garbage, ignore
+
+                elif 'v' in line: # version number request
+                    if ser.is_open:
+                        ser.write("v1.0.0\r\n".encode('utf-8'))
+                    else:
+                        self.logging.log(logging.ERROR,'Serial port {} is not open'.format(port))
+                
+                elif 'b' in line:
+                    accX_hex=float_to_hex(self.acc.x)
+                    accY_hex=float_to_hex(self.acc.y)
+                    accZ_hex=float_to_hex(self.acc.z)
+
+                    gyrX_hex=float_to_hex(self.gyr.x)
+                    gyrY_hex=float_to_hex(self.gyr.y)
+                    gyrZ_hex=float_to_hex(self.gyr.z)
+
+                    magX_hex=float_to_hex(self.mag.x)
+                    magY_hex=float_to_hex(self.mag.y)
+                    magZ_hex=float_to_hex(self.mag.z)
+
+                    # acc,gyr,mag
+                    str = accX_hex+accY_hex+accZ_hex+gyrX_hex+gyrY_hex+gyrZ_hex+magX_hex+magY_hex+magZ_hex+'\r\n'
+                    if ser.is_open:
+                        ser.write(str.encode('utf-8'))
+                    else:
+                        self.logging.log(logging.ERROR,'Serial port {} is not open'.format(port))
+
+                else:
+                    pass # unknown command
+        
+        ser.close()
+        self.logger.log(logging.INFO, 'Serial stopped')
+        
     async def handle_termination(self, tasks:None):
         self.logger.log(logging.INFO, 'Control-C or kill signal detected')
         self.finish_up.set()
@@ -1166,7 +1255,7 @@ async def main(args: argparse.Namespace):
         tasks = tasks.append(reporting_task)
 
     if args.serial is not None:
-        serial_task     = asyncio.create_task(controller.update_serial())   # update serial, will not terminate
+        serial_task     = asyncio.create_task(controller.update_serial(args.serial, args.baud))   # update serial, will not terminate
         tasks = tasks.append(serial_task)
  
     # Set up a Control-C handler to gracefully stop the program
@@ -1245,6 +1334,14 @@ if __name__ == '__main__':
         metavar='<serial>',
         help='enables serial output',
         default = None
+    )
+
+    parser.add_argument(
+        '-b',
+        '--baud',
+        metavar='<baut>',
+        help='serial baud rate',
+        default = 115200
     )
 
     args = parser.parse_args()
