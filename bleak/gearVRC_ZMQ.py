@@ -15,7 +15,8 @@
 #     connect yourMAC
 # B Windows) Pair Controller:
 #   No command line tools for pairing of BLE devices available
-#   You will need to manually remove the device from the system each time before using it
+#   You will need to manually remove the device from the system 
+#     each time before using it. 
 ################################################################
             
 # IMPORTS
@@ -30,11 +31,11 @@ import time
 import numpy as np
 import more_itertools as mit
 import os
-import uvloop
 from copy import copy
-import serial
 import serial_asyncio
 import re
+import msgpack
+
 
 from bleak      import BleakClient, BleakScanner
 from bleak.exc  import BleakError
@@ -46,7 +47,9 @@ from pyIMU.utilities import q2rpy, heading
 
 import zmq
 
-asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+if os.name != 'nt':
+    import uvloop
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
 RAD2DEG = 180.0 / math.pi
 DEG2RAD = math.pi / 180.0
@@ -80,7 +83,7 @@ REPORTINTERVAL                   = 1/10
 ################################################################
 CMD_OFF                          = bytearray(b'\x00\x00')   # Turn modes off and stop sending data
 CMD_SENSOR                       = bytearray(b'\x01\x00')   # Touchpad and sensor buttons but low rate IMU data
-CMD_UNKNOWN_FIRMWARE_UPDATE_FUNC = bytearray(b'\x02\x00')   # Initiate frimware update sequence
+CMD_UNKNOWN_FIRMWARE_UPDATE_FUNC = bytearray(b'\x02\x00')   # Initiate firmware update sequence
 CMD_CALIBRATE                    = bytearray(b'\x03\x00')   # Initiate calibration: Not sure how to compensate for drift
 CMD_KEEP_ALIVE                   = bytearray(b'\x04\x00')   # Keep alive: Not sure about time interval
 CMD_UNKNOWN_SETTING              = bytearray(b'\x05\x00')   # Setting mode: ?
@@ -104,11 +107,12 @@ NUMWHEELPOS7_8                   = NUMWHEELPOS*7/8
 MAXWHEELPOS                      = NUMWHEELPOS-1
 MAXWHEELPOS2                     = MAXWHEELPOS/2.0
 # Scrolling on virtual touchpad
+#  The touchpad has a limited resolution and we can extend 
+#  the range by scrolling: lifting the finger and moving in same direction again
 MINXTOUCH                        = 0
 MINYTOUCH                        = 0
 MAXXTOUCH                        = 1024
 MAXYTOUCH                        = 1024
-
 
 ################################################################
 # Support Functions
@@ -132,10 +136,11 @@ def calibrate(data:Vector3D, offset:Vector3D, crosscorr=None):
     ''' 
     IMU calibration
     bias is offset so that 0 is in the middle of the range
-    scale is gain so that 1 is the maximum value
+    scale is the gain so that 1 is the maximum value
     cross correlation is cross axis sensitivity
+    the diagonal elements of the cross correlation matrix are the scale
 
-    Expects data, bias and scale to be a Vector3D
+    Expects data and bias to be a Vector3D
     Expects crosscorr to be 3x3 numpy array
     '''
     # Bias
@@ -146,6 +151,7 @@ def calibrate(data:Vector3D, offset:Vector3D, crosscorr=None):
 
     return data
 
+# This will create readable text, for example to send numbers over serial connection
 def float_to_hex(f):
     '''Pack float into 8 characters representing '''
     bytes_ = struct.pack('!f', f)                            # Single precision, big-endian byte order, 4 bytes
@@ -168,71 +174,93 @@ def hex_to_int(hex_chars):
     hex_bytes = bytes.fromhex(hex_chars)  # Convert hex characters to bytes
     return struct.unpack('!i', hex_bytes)[0]
 
+# Data Packets to be sent with ZMQ
+
+class gearSystemData(object):
+    '''System relevant performance data'''
+    def __init__(self, 
+                 data_fps: int = 0, virtual_fps: int = 0, fusion_fps: int = 0, zmq_fps: int = 0, reporting_fps: int =0) -> None:
+        self.data_fps       = data_fps
+        self.virtual_fps    = virtual_fps
+        self.fusion_fps     = fusion_fps
+        self.zmq_fps        = zmq_fps
+        self.reporting_fps  = reporting_fps
+
+class gearRawData(object):
+    '''Raw Data from the sensor'''
+    def __init__(self, 
+                 temperature: float=0.0, battery_level: float =-1.0, 
+                 sensorTime: float=0.0, aTime: float=0.0, bTime: float=0.0,
+                 accX: float=0.0, accY: float=0.0, accZ: float=0.0,
+                 gyrX: float=0.0, gyrY: float=0.0, gyrZ: float=0.0,
+                 magX: float=0.0, magY: float=0.0, magZ: float=0.0,
+                 trigger: bool = False, touch: bool = False, back: bool = False, home: bool = False, 
+                 volume_up: bool = False, volume_down: bool = False, noButton: bool = False,
+                 touchX: int = 0, touchY: int = 0) -> None:
+        
+        self.temperature    = temperature
+        self.battery_level  = battery_level
+        self.sensorTime     = sensorTime
+        self.aTime          = aTime
+        self.bTime          = bTime
+        self.accX           = accX
+        self.accY           = accY
+        self.accZ           = accZ
+        self.magX           = magX
+        self.magY           = magY
+        self.magZ           = magZ
+        self.gyrX           = gyrX
+        self.gyrY           = gyrY
+        self.gyrZ           = gyrZ
+        self.trigger        = trigger
+        self.touch          = touch
+        self.back           = back
+        self.home           = home
+        self.volume_up      = volume_up
+        self.volume_down    = volume_down
+        self.noButton       = noButton
+        self.touchX         = touchX
+        self.touchY         = touchY
+
+class gearVirtualData(object):
+    '''Virtual wheel and touchpad data'''
+    def __init__(self, 
+                 absX: int = 0, absY: int = 0,
+                 dirUp: bool = False, dirDown: bool = False, dirLeft: bool = False, dirRight: bool = False,
+                 wheelPos: int = 0,
+                 top: bool = False, bottom: bool = False, left: bool = False, right: bool = False, center: bool = False,
+                 clockwise: bool = False, isRotating: bool = False) -> None:
+                 
+        self.absX           = absX
+        self.absY           = absY
+        self.dirUp          = dirUp
+        self.dirDown        = dirDown
+        self.dirLeft        = dirLeft
+        self.dirRight       = dirRight
+        self.wheelPos       = wheelPos
+        self.top            = top
+        self.bottom         = bottom
+        self.left           = left
+        self.right          = right
+        self.center         = center
+        self.clockwise      = clockwise
+        self.isRotating     = isRotating
+
+class gearFusionData(object):
+    '''AHRS fusion data'''
+    def __init__(self, 
+                 acc: Vector3D = Vector3D(0,0,0), mag: Vector3D = Vector3D(0,0,0), gyr: Vector3D = Vector3D(0,0,0), 
+                 rpy: Vector3D = Vector3D(0,0,0), heading: float = 0.0, q: Quaternion = Quaternion(1,0,0,00)) -> None:
+        self.acc            = acc
+        self.mag            = mag
+        self.gyr            = gyr
+        self.rpy            = rpy
+        self.heading        = heading
+        self.q              = q
+
 ################################################################
 # gearVRC 
 ################################################################
-
-class gearData(object):
-    def __init__(self, 
-                 temperature, battery_level, 
-                 HighResMode, 
-                 data_fps, virtual_fps, fusion_fps, zmq_fps,
-                 sensorTime, aTime, bTime,
-                 accX, accY, accZ,
-                 gyrX, gyrY, gyrZ,
-                 magX, magY, magZ,
-                 trigger, touch, back, home, volume_up, volume_down, noButton,
-                 touchX, touchY,
-                ):
-                 
-        self.temperature = temperature
-        self.battery_level = batter_level
-        self.HighResMode = HighResMode
-        self.data_fps =
-        self.virtual_fps =
-        self.fusion_fps =
-        self.zmq_fps =
-        self.sensorTime =
-        self.aTime =
-        self.bTime =
-        self.accX =
-        self.accY =
-        self.accZ =
-        self.magX =
-        self.magY =
-        self.magZ =
-        self.gyrX =
-        self.gyrY =
-        self.gyrZ =
-        self.trigger =
-        self.touch =
-        self.back =
-        self.home =
-        self.volume_up =
-        self.volume_down =
-        self.noButton =
-        self.touchX =
-        self.touchY =
-        self.absX =
-        self.absY =
-        self.dirUp =
-        self.dirDown =
-        self.dirLeft =
-        self.dirRight =
-        self.wheelPos =
-        self.top =
-        self.bottom =
-        self.left =
-        self.right =
-        self.center =
-        self.clockwise =
-        self.isRotating =
-        self.acc =
-        self.mag =
-        self.gyr =
-        self.rpy =
-        self.heading =
-        self.q =
 
 class gearVRC:
             
@@ -311,8 +339,8 @@ class gearVRC:
         self.magZ                   = 0.    #
         
         # Touchpad
-        self.touchX                 = 0.    # Touchpad Location (up/down) 
-        self.touchY                 = 0.    # (left/right)
+        self.touchX                 = 0     # Touchpad Location (up/down) 
+        self.touchY                 = 0     # (left/right)
         
         # Other
         self.temperature            = 0.    # Device Temperature
@@ -332,7 +360,7 @@ class gearVRC:
         self._previous_wheelPos     = 0
         self.delta_wheelPos         = 0
         self.top                    = False # Wheel touched in top quadrant
-        self.bottom                 = False # Wheel touched in buttom quadrant
+        self.bottom                 = False # Wheel touched in bottom quadrant
         self.left                   = False # Wheel touched in left quadrant
         self.right                  = False # Wheel touched in right quadrant
         self.center                 = False # Touchpad touched inside of wheel
@@ -372,7 +400,7 @@ class gearVRC:
         self.fusion_deltaTime       = 0.
         self._fusion_updateCounts   = 0
         self.fusion_fps             = 0
-        self._previous_fusionTime   = 0. # The differense between the sensor time stamps
+        self._previous_fusionTime   = 0. # The difference between the sensor time stamps
 
         self._report_lastTimeFPS    = time.perf_counter()
         self._previous_reportUpdate = time.perf_counter()
@@ -403,10 +431,10 @@ class gearVRC:
         [self._l_right, self._l_top, self._l_left, self._l_bottom] = [list(x) for x in position_sections]
 
         # IMU calibration
-        # In future I will read calibration from file
+        # In future I will read calibration data from file
         #  bias is offset so that 0 is in the middle of the range
-        #  scale is gain so that 1 is the maximum value
         #  cross correlation is cross axis sensitivity, diagonal elements are the scale
+        #  scale is gain so that 1 is the maximum value and it is the diagonale of the cross correlation matrix
         self.acc_offset          = Vector3D(0.,0.,0.)
         self.acc_crosscorr       = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
         self.gyr_offset          = Vector3D(-0.0104,-0.0135,-0.0391)
@@ -432,6 +460,9 @@ class gearVRC:
 
     async def update_connect(self):
         '''
+        This is most tricky part of the code to remain connected with the device.
+        If device connection is interrupted because of signal loss it does not yet recover.
+        
         Connection Loop:
           Scan for Device
             Create Client
@@ -473,17 +504,21 @@ class gearVRC:
                             self.connected.set() # signal we have connection
                             self.lost_connection.clear()
                             self.logger.log(logging.INFO,'Connected to {}'.format(self.device_name))
-                            if first_time: self.logger.log(logging.INFO,'Finding Characteristics')
+                            self.logger.log(logging.INFO,'Finding Characteristics')
+                            # this needs to be run each time we create a new client
                             self.find_characteristics() # scan and assign device characteristics
                             if first_time:
+                                # We dont need to read device information each time, as it remains the same
                                 self.logger.log(logging.INFO,'Reading Device Information')
                                 await self.read_deviceInformation() # populate device information
                                 first_time = False
-                            if first_time: self.logger.log(logging.INFO,'Starting Sensor')
+                            # this needs to be run each time we create a new client
+                            self.logger.log(logging.INFO,'Starting Sensor')
                             await self.start_sensor(self._VRMode) # start the sensors
-                            if first_time: self.logger.log(logging.INFO,'Subscribing to Notifications')
+                            # this needs to be run each time we create a new client
+                            self.logger.log(logging.INFO,'Subscribing to Notifications')
                             await self.subscribe_notifications() # subscribe to device characteristics that have notification function
-                            if first_time: self.logger.log(logging.INFO,'Setup completed')
+                            self.logger.log(logging.INFO,'Setup completed')
                         else:
                             self.connected.clear()
                             self.logger.log(logging.ERROR,"Could not connect to {}".format(self.device_name))
@@ -587,6 +622,7 @@ class gearVRC:
         '''
         Read Device Information
         Primarily used for characteristics that dont have notification
+        This needs to be read only once.
         '''
         
         # Battery Level
@@ -723,7 +759,7 @@ class gearVRC:
         Additions includes the 3 different time stamps as well as correct magnetometer fields
         Keep this short so taht it just reads and decodes the data
         '''
-        
+         
         currentTime = time.perf_counter()
         
         # Update rate
@@ -740,8 +776,8 @@ class gearVRC:
             self._data_updateCounts = 0
             # self.logger.log(logging.DEBUG, 'FPS: {}'.format(self.data_fps))
 
-        # After 20 succsefull runs and low frequency updates, engage VRMode
-        # if self.data_deltaTime > 0.23
+        # After 20 successful runs and low frequency updates, try to engage VRMode
+        # Not Implemented
 
         # Should receive 60 values
         if (len(data) >= 60):
@@ -778,7 +814,6 @@ class gearVRC:
             self.volume_up   = True if ((data[58] & 16) == 16) else False
             self.volume_down = True if ((data[58] & 32) == 32) else False
             self.noButton    = True if ((data[58] & 64) == 64) else False
-
 
             # Touch pad:
             #  Max observed value = 315
@@ -826,7 +861,7 @@ class gearVRC:
             #   acc.x pointing forward      -acc.y
             #   acc.y pointing to the right -acc.x
             #   acc.z pointing downwards     acc.z
-            #   mag.x pointign forward      -mag.y
+            #   mag.x pointing forward      -mag.y
             #   mag.y pointing to the right  mag.x
             #   mag.z pointing down          mag.z
             #   gyr.x clock wise forward     gyr.y
@@ -897,6 +932,49 @@ class gearVRC:
         else:
             self.logger.log(logging.ERROR, 'Could not stop: disconnected')
 
+    async def update_EscSequence(self, counts=3, timeout=1.0):
+        '''
+        Check if home button is pressed three times in a row within timeout seconds
+        '''
+
+        self.logger.log(logging.INFO, 'ESC Detection started')
+
+        # Keep track of home button presses
+        previous_home = False
+        home_updateCounts = 0
+        home_pressedTime = time.perf_counter()
+
+        while not self.finish_up.is_set():
+
+            await self.dataAvailable.wait()
+            
+            if self.home == True:
+                if not previous_home:
+                    # Home button pressed
+                    elapsed = time.perf_counter() - home_pressedTime
+                    home_updateCounts += 1
+                    previous_home = True
+                    
+                    if home_updateCounts == 1:
+                        home_pressedTime = time.perf_counter()
+                    
+                    elif home_updateCounts == counts:
+                        if elapsed <= timeout:
+                            # ESC sequence detected, signal finish
+                            self.logger.log(logging.INFO, 'ESC detected')
+                            self.handle_termination()
+                        else:
+                            # To slow, ESC not detected, reset
+                            home_updateCounts = 0
+                else: 
+                    # it remains pressed
+                    pass
+            else:
+                # its not pressed
+                previous_home = False
+
+        self.logger.log(logging.INFO, 'ESC Detection stopped')
+            
     async def update_virtual(self):
         ''' 
         Create Virtual Wheel
@@ -907,8 +985,6 @@ class gearVRC:
         self.logger.log(logging.INFO, 'Virtual started')
 
         while not self.finish_up.is_set():
-
-            # print('V', end='', flush=True)
 
             # self.logger.log(logging.DEBUG, 'Waiting for sensor data')
             await self.dataAvailable.wait()
@@ -1031,6 +1107,7 @@ class gearVRC:
                             self.dirDown  = False
 
                 self.virtualDataAvailable.set() 
+                
             else: # Touch pad was not touched
                 self.center   = False
                 self.top      = False
@@ -1139,14 +1216,12 @@ class gearVRC:
         
         self.logger.log(logging.INFO, 'Keeping alive stopped')
 
-    async def update_report(self):
+    async def update_report(self, args):
         '''
         Report latest fused data
         '''
         self.logger.log(logging.INFO, 'Starting reporting')
         while not self.finish_up.is_set():
-
-            # print('R', end='', flush=True)
 
             currentTime = time.perf_counter()
 
@@ -1164,18 +1239,26 @@ class gearVRC:
 
             # Display the Data
             msg_out = '-------------------------------------------------\n'
-            msg_out+= 'gearVR Controller: Temp {:>4.1f}, Bat {:>3d}, HighRes:{}\n'.format(
-                                                self.temperature, self.battery_level, 
-                                                'Y' if self.HighResMode else 'N')
+            if args.report > 1:
+                msg_out+= 'gearVR Controller: Temp {:>4.1f}, Bat {:>3d}, HighRes:{}\n'.format(
+                                                    self.temperature, self.battery_level, 
+                                                    'Y' if self.HighResMode else 'N')
+            else:
+                msg_out+= 'gearVR Controller: Temp {:>4.1f}, Bat {:>3d}\n'.format(
+                                                    self.temperature, self.battery_level)
             msg_out+= '-------------------------------------------------\n'
 
-            msg_out+= 'Data    {:>10.6f}, fps {:>3d}\n'.format(self.data_deltaTime*1000.,    self.data_fps)
-            msg_out+= 'Report  {:>10.6f}, fps {:>3d}\n'.format(self.report_deltaTime*1000.,  self.report_fps)
-            msg_out+= 'Virtual {:>10.6f}, fps {:>3d}\n'.format(self.virtual_deltaTime*1000., self.virtual_fps)
-            msg_out+= 'Fusion  {:>10.6f}, fps {:>3d}\n'.format(self.fusion_deltaTime*1000.,  self.fusion_fps)
-            msg_out+= 'Serial  {:>10.6f}, fps {:>3d}\n'.format(self.serial_deltaTime*1000.,  self.serial_fps)
+            if args.report > 1:
+                msg_out+= 'Data    {:>10.6f}, fps {:>3d}\n'.format(self.data_deltaTime*1000.,    self.data_fps)
+                msg_out+= 'Report  {:>10.6f}, fps {:>3d}\n'.format(self.report_deltaTime*1000.,  self.report_fps)
+                if args.virtual:
+                    msg_out+= 'Virtual {:>10.6f}, fps {:>3d}\n'.format(self.virtual_deltaTime*1000., self.virtual_fps)
+                if args.fusion:
+                    msg_out+= 'Fusion  {:>10.6f}, fps {:>3d}\n'.format(self.fusion_deltaTime*1000.,  self.fusion_fps)
+                if args.serial is not None:
+                    msg_out+= 'Serial  {:>10.6f}, fps {:>3d}\n'.format(self.serial_deltaTime*1000.,  self.serial_fps)
 
-            msg_out+= '-------------------------------------------------\n'
+                msg_out+= '-------------------------------------------------\n'
 
             msg_out+= 'Time  {:>10.6f}, {:>10.6f}, {:>10.6f}\n'.format(self.sensorTime, self.aTime, self.bTime)
             msg_out+= 'dt    {:>10.6f}, {:>10.6f}, {:>10.6f}\n'.format(self.delta_sensorTime, self.delta_aTime, self.delta_bTime)
@@ -1198,33 +1281,36 @@ class gearVRC:
 
             msg_out+= 'TPad:  {:>3d},{:>3d}\n'.format(self.touchX, self.touchY)
 
-            msg_out+= 'VPad:  {:>3d},{:>3d} U{} D{} L{} R{}\n'.format(
-                                                self.absX, self.absY,
-                                                'Y' if self.dirUp    else 'N',
-                                                'Y' if self.dirDown  else 'N',
-                                                'Y' if self.dirLeft  else 'N',
-                                                'Y' if self.dirRight else 'N')
-            
-            msg_out+= 'Wheel: {:>3d}:{:>3d} T{} B{} L{} R{} C{} R:{}\n'.format(
-                                                self.wheelPos, self.delta_wheelPos,
-                                                'Y' if self.top    else 'N',
-                                                'Y' if self.bottom else 'N',
-                                                'Y' if self.left   else 'N',
-                                                'Y' if self.right  else 'N',
-                                                'Y' if self.center else 'N', 
-                                                (' C' if self.clockwise else 'CC') if self.isRotating else '__')
+            if args.virtual:
+                msg_out+= 'VPad:  {:>3d},{:>3d} U{} D{} L{} R{}\n'.format(
+                                                    self.absX, self.absY,
+                                                    'Y' if self.dirUp    else 'N',
+                                                    'Y' if self.dirDown  else 'N',
+                                                    'Y' if self.dirLeft  else 'N',
+                                                    'Y' if self.dirRight else 'N')
+                
+                msg_out+= 'Wheel: {:>3d}:{:>3d} T{} B{} L{} R{} C{} R:{}\n'.format(
+                                                    self.wheelPos, self.delta_wheelPos,
+                                                    'Y' if self.top    else 'N',
+                                                    'Y' if self.bottom else 'N',
+                                                    'Y' if self.left   else 'N',
+                                                    'Y' if self.right  else 'N',
+                                                    'Y' if self.center else 'N', 
+                                                    (' C' if self.clockwise else 'CC') if self.isRotating else '__')
 
-            msg_out+= '-------------------------------------------------\n'
-            msg_out+= 'Acc     {:>8.3f} {:>8.3f} {:>8.3f} N  {:>8.3f}\n'.format(self.acc.x,self.acc.y,self.acc.z,self.acc.norm)
-            msg_out+= 'Mag     {:>8.3f} {:>8.3f} {:>8.3f} N  {:>8.3f}\n'.format(self.mag.x,self.mag.y,self.mag.z,self.mag.norm)
-            msg_out+= 'Gyr     {:>8.3f} {:>8.3f} {:>8.3f} N  {:>8.3f}\n'.format(self.gyr.x*RAD2DEG,self.gyr.y*RAD2DEG,self.gyr.z*RAD2DEG,self.gyr.norm*RAD2DEG)
-            msg_out+= 'Gyr avg {:>8.5f} {:>8.5f} {:>8.5f} RPM{:>8.3f}\n'.format(self.gyr_average.x*RAD2DEG, self.gyr_average.y*RAD2DEG, self.gyr_average.z*RAD2DEG, self.gyr.norm*60/TWOPI)
+                msg_out+= '-------------------------------------------------\n'
 
-            msg_out+= 'Euler: R{:>6.1f} P{:>6.1f} Y{:>6.1f}, Heading {:>4.0f}\n'.format(
-                                            self.rpy.x*RAD2DEG, self.rpy.y*RAD2DEG, self.rpy.z*RAD2DEG, 
-                                            self.heading*RAD2DEG)
-            msg_out+= 'Q:     W{:>6.3f} X{:>6.3f} Y{:>6.3f} Z{:>6.3f}\n'.format(
-                                            self.q.w, self.q.x, self.q.y, self.q.z)
+            if args.fusion:
+                msg_out+= 'Acc     {:>8.3f} {:>8.3f} {:>8.3f} N  {:>8.3f}\n'.format(self.acc.x,self.acc.y,self.acc.z,self.acc.norm)
+                msg_out+= 'Mag     {:>8.3f} {:>8.3f} {:>8.3f} N  {:>8.3f}\n'.format(self.mag.x,self.mag.y,self.mag.z,self.mag.norm)
+                msg_out+= 'Gyr     {:>8.3f} {:>8.3f} {:>8.3f} N  {:>8.3f}\n'.format(self.gyr.x*RAD2DEG,self.gyr.y*RAD2DEG,self.gyr.z*RAD2DEG,self.gyr.norm*RAD2DEG)
+                msg_out+= 'Gyr avg {:>8.5f} {:>8.5f} {:>8.5f} RPM{:>8.3f}\n'.format(self.gyr_average.x*RAD2DEG, self.gyr_average.y*RAD2DEG, self.gyr_average.z*RAD2DEG, self.gyr.norm*60/TWOPI)
+
+                msg_out+= 'Euler: R{:>6.1f} P{:>6.1f} Y{:>6.1f}, Heading {:>4.0f}\n'.format(
+                                                self.rpy.x*RAD2DEG, self.rpy.y*RAD2DEG, self.rpy.z*RAD2DEG, 
+                                                self.heading*RAD2DEG)
+                msg_out+= 'Q:     W{:>6.3f} X{:>6.3f} Y{:>6.3f} Z{:>6.3f}\n'.format(
+                                                self.q.w, self.q.x, self.q.y, self.q.z)
 
             print(msg_out, flush=True)
 
@@ -1240,7 +1326,8 @@ class gearVRC:
         Report latest fused data
         This is formatted to respond to freeIMU calibration GUI software
         '''
-        self.logger.log(logging.INFO, 'Serial started')
+        self.logger.log(logging.INFO, 'Creating serial reader and writer with {} at {} baud...'.format(args.serial, args.baud))
+        reader, writer = await serial_asyncio.open_serial_connection(url=args.serial, baudrate=args.baud)
 
         # writer.write('Welcome to gearVRC\r\n'.encode())
 
@@ -1311,91 +1398,112 @@ class gearVRC:
                 
         self.logger.log(logging.INFO, 'Serial stopped')
     
-    async def update_zmq(self, socket):
+    async def update_zmq(self, args):
         '''
-        Report latest fused data
-        This is formatted to respond to freeIMU calibration GUI software
+        Report data on ZMQ socket
+        if virtual is enabled, also send virtual data
+        if fusion is enabled, also send fusion data
         '''
-        self.logger.log(logging.INFO, 'ZMQ started')
+        
+        self.logger.log(logging.INFO, 'Creating zmq publisher at tcp://*:{} ...'.format(args.zmq))
+        socket = zmq.asyncio.Context().socket(zmq.PUB)
+        socket.bind("tcp://*:{}".format(args.zmq))
+
+        data_system  = gearSystemData()
+        data_raw     = gearRawData()
+        data_virtual = gearVirtualData()
+        data_fusion  = gearFusionData()
 
         while not self.finish_up.is_set():
 
-            socket.send_string(line_out)
+            await self.dataAvailable.wait()
+            self.dataAvailable.clear()
+            
+            data_raw.accX = self.accX
+            data_raw.accY = self.accY
+            data_raw.accZ = self.accZ
+            data_raw.gyrX = self.gyrX
+            data_raw.gyrY = self.gyrY 
+            data_raw.gyrZ = self.gyrZ
+            data_raw.magX = self.magX
+            data_raw.magY = self.magY
+            data_raw.magZ = self.magZ
+            data_raw.temp = self.temperature
+            data_raw.battery = self.battery_level
+            data_raw.trigger = self.trigger
+            data_raw.touch = self.touch
+            data_raw.back = self.back
+            data_raw.home = self.home
+            data_raw.volume_up = self.volume_up
+            data_raw.volume_down = self.volume_down
+            data_raw.noButton = self.noButton
+            data_raw.touchX = self.touchX
+            data_raw.touchY = self.touchY
+            data_raw.sensorTime = self.sensorTime
+            data_raw.aTime = self.aTime
+            data_raw.bTime = self.bTime
 
-            msg_in = await socket.readline() # read a full line, needs to have /n at end of line (Ctrl-J in putty)
-            line_in = msg_in.decode().strip()
-            if len(line_in) > 0:
-                if 'v' in line_in: # version number request
-                    socket.send_string("gearVRC v1.0.0\r\n")
+            raw_msgpack = msgpack.packb(data_raw)
+            socket.send_multipart([b"raw", raw_msgpack])               
 
-                elif 'x' in line_in:
-                    self.logger.log(logging.INFO,'We dont have EEPROM')
+            data_system.data_fps    = self.data_fps
+            data_system.virtual_fps = self.virtual_fps
+            data_system.fusion_fps  = self.fusion_fps
+            data_system.zmq_fps     = self.zmq_fps
+            data_system.serial_fps  = self.serial_fps
+            data_system.reporting_fps = self.report_fps
+            
+            system_msgpack = msgpack.packb(data_system)
+            socket.send_multipart([b"system", system_msgpack])               
+            
+            if args.virtual:
+                await self.virtualDataAvailable.wait()
+                self.virtualDataAvailable.clear()
+                
+                data_virtual.absX = self.absX
+                data_virtual.absY = self.absY
+                data_virtual.dirUp = self.dirUp
+                data_virtual.dirDown = self.dirDown
+                data_virtual.dirLeft = self.dirLeft
+                data_virtual.dirRight = self.dirRight
+                data_virtual.wheelPos = self.wheelPos
+                data_virtual.top = self.top
+                data_virtual.bottom = self.bottom
+                data_virtual.left = self.left
+                data_virtual.right = self.right
+                data_virtual.center = self.center
+                data_virtual.isRotating = self.isRotating
+                data_virtual.clockwise = self.clockwise
+        
+                virtual_msgpack = msgpack.packb(data_virtual)               
+                socket.send_multipart([b"virtual", virtual_msgpack])               
 
-                elif 'c' in line_in:
-                    self.logger.log(logging.INFO,'We dont have EEPROM')
+            if args.fusion:
+                await self.fusedDataAvailable.wait()
+                self.fusedDataAvailable.clear()
 
-                elif 'C' in line_in:
-                    self.logger.log(logging.INFO,'We dont have EEPROM')
-                    socket.send_string('N.A.\r\n')
-                    socket.send_string('N.A.\r\n')
-                    socket.send_string('N.A.\r\n')
-                    socket.send_string('N.A.\r\n')
-                else:
-                    # check if b command was present
-                    # extract number of readings requested
-                    match_b = re.search(r'b(\d+)', line_in)
-                    if match_b:
-                        count = int(match_b.group(1))
-                        
-                        startTime = time.perf_counter()
-                        self._previous_serialUpdate = copy(startTime)
-                                                
-                        for i in range(count):
-                            currentTime = time.perf_counter()
-
-                            await self.dataAvailable.wait()
-                            self.dataAvailable.clear()
-
-                            self.serial_deltaTime = currentTime - self._previous_serialUpdate
-                            self._previous_serialUpdate = copy(currentTime)
-
-                            self._serial_updateCounts += 1
-                        
-                            accX_hex=float_to_hex(self.acc.x)
-                            accY_hex=float_to_hex(self.acc.y)
-                            accZ_hex=float_to_hex(self.acc.z)
-
-                            gyrX_hex=float_to_hex(self.gyr.x)
-                            gyrY_hex=float_to_hex(self.gyr.y)
-                            gyrZ_hex=float_to_hex(self.gyr.z)
-
-                            magX_hex=float_to_hex(self.mag.x)
-                            magY_hex=float_to_hex(self.mag.y)
-                            magZ_hex=float_to_hex(self.mag.z)
-
-                            # acc,gyr,mag
-                            line_out = accX_hex+accY_hex+accZ_hex+gyrX_hex+gyrY_hex+gyrZ_hex+magX_hex+magY_hex+magZ_hex+'\r\n'
-                            socket.send_string(line_out)
-                    
-                        self.serial_fps = int(self._serial_updateCounts / (time.perf_counter() - startTime))
-                        self._serial_updateCounts = 0
-                    else:
-                        pass # unknown command
-            else:
-                pass # empty line received
+                data_fusion.acc = self.acc
+                data_fusion.gyr = self.gyr
+                data_fusion.mag = self.mag
+                data_fusion.rpy = self.rpy
+                data_fusion.heading = self.heading
+                data_fusion.q = self.q
+                
+                fusion_msgpack = msgpack.packb(data_fusion)
+                socket.send_multipart([b"fusion", fusion_msgpack])               
                 
         self.logger.log(logging.INFO, 'ZMQ stopped')
             
     async def handle_termination(self, tasks:None):
-        self.logger.log(logging.INFO, 'Control-C or kill signal detected')
+        self.logger.log(logging.INFO, 'Controller ESC, Control-C or kill signal detected')
         self.finish_up.set()
         self.logger.log(logging.INFO, 'Stopping Sensor...')
         await self.stop_sensor()
         self.logger.log(logging.INFO, 'Disconnecting...')
         await self.disconnect()
         self.logger.log(logging.INFO, 'Cancelling all tasks...')
-        if tasks is not None:
-            await asyncio.sleep(1)
+        if tasks is not None: # This will terminate tasks faster
+            await asyncio.sleep(1) # give some time for tasks to finish up
             for task in tasks:
                 task.cancel()
 
@@ -1403,14 +1511,15 @@ async def main(args: argparse.Namespace):
 
     # Setup logging
     logger = logging.getLogger(__name__)
-    logger.log(logging.INFO, 'gearVRC Starting...')
+    logger.log(logging.INFO, 'gearVR Controller Starting...')
 
     # gearVRC Controller
     controller = gearVRC(device_name=args.name, device_address=args.address, logger=logger, VRMode=args.vrmode)
 
     connection_task = asyncio.create_task(controller.update_connect())      # remain connected, will not terminate
     keepalive_task  = asyncio.create_task(controller.keep_alive())          # keep sensor alive, will not terminate
-    tasks = [connection_task, keepalive_task]
+    escape_task     = asyncio.create_task(controller.update_EscSequence(counts=3, timeout=1.0)) # User can press Home 3 times to exit
+    tasks = [connection_task, keepalive_task, escape_task]
 
     if args.virtual:
         virtual_task    = asyncio.create_task(controller.update_virtual())  # update wheel, will not terminate
@@ -1420,21 +1529,16 @@ async def main(args: argparse.Namespace):
         fusion_task     = asyncio.create_task(controller.update_fusion())   # update pose, will not terminate
         tasks.append(fusion_task)
 
-    if args.report:
-        reporting_task  = asyncio.create_task(controller.update_report())   # report new data, will not terminate
+    if args.report > 0:
+        reporting_task  = asyncio.create_task(controller.update_report(args))   # report new data, will not terminate
         tasks.append(reporting_task)
 
     if args.serial is not None:
-        logger.log(logging.INFO, 'Creating serial reader and writer with {} at {} baud...'.format(args.serial, args.baud))
-        serialReader, serialWriter = await serial_asyncio.open_serial_connection(url=args.serial, baudrate=args.baud)
-        serial_task     = asyncio.create_task(controller.update_serial(serialReader, serialWriter))   # update serial, will not terminate
+        serial_task     = asyncio.create_task(controller.update_serial(args))   # update serial, will not terminate
         tasks.append(serial_task)
 
     if args.zmq is not None:
-        logger.log(logging.INFO, 'Creating zmq publisher at tcp://*:{} ...'.format(args.zmq))
-        socket = zmq.asyncio.Context().socket(zmq.PUB)
-        socket.bind("tcp://*:{}".format(args.zmq))
-        zmq_task     = asyncio.create_task(controller.update_zmq(socket))   # update zmq, will not terminate
+        zmq_task     = asyncio.create_task(controller.update_zmq(args))   # update zmq, will not terminate
         tasks.append(zmq_task)
  
     # Set up a Control-C handler to gracefully stop the program
@@ -1480,7 +1584,7 @@ if __name__ == '__main__':
         '-vr',
         '--vrmode',
         action='store_true',
-        help='sets the vrmode, sensor mode is used otherwise',
+        help='sets the vrmode, sensor mode is used otherwise, [does not work]',
         default = False
     )
 
@@ -1495,9 +1599,11 @@ if __name__ == '__main__':
     parser.add_argument(
         '-r',
         '--report',
-        action='store_true',
-        help='turns on logging of sensor values',
-        default = False
+        dest = 'report',
+        type = int,
+        metavar='<report>',
+        help='report level: 0(None), 1(Minimal), 2(Verbose)',
+        default = 0
     )
 
     parser.add_argument(
@@ -1522,8 +1628,7 @@ if __name__ == '__main__':
         dest = 'serial',
         type = str,
         metavar='<serial>',
-        help='serial port for reporting, e.g \'/tmp/ttyV0\' when you are using virtual ports socat -d -d pty,rawer,echo=0,link=/tmp/ttyV0 pty,rawer,echo=0,link=/tmp/ttyV1&',
-        # default = '/tmp/ttyV0'
+        help='serial port for reporting, e.g \'/tmp/ttyV0\' when you are using virtual ports \'socat -d -d pty,rawer,echo=0,link=/tmp/ttyV0 pty,rawer,echo=0,link=/tmp/ttyV1&\'',
         default = None
     )
 
@@ -1552,7 +1657,7 @@ if __name__ == '__main__':
     log_level = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(
         level=log_level,
-        format='%(asctime)-15s %(name)-8s %(levelname)s: %(message)s',
+        # format='%(asctime)-15s %(name)-8s %(levelname)s: %(message)s'
     )   
     
     try:
