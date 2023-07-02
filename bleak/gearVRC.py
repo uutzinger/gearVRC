@@ -492,6 +492,7 @@ class gearVRC:
 
                 # Wait until disconnection occurs
                 await self.lost_connection.wait()
+                self.lost_connection.clear()
                 self.logger.log(logging.INFO,'Lost connection to {}'.format(self.device_name))            
 
             else: # Device not found
