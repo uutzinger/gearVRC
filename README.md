@@ -11,7 +11,7 @@ The gearVR Controller disconnects after inactivity. Usually a short press on the
 
 Using gear VR Controller on Windows is cumbersome as one needs to remove the device from the system each time before using it. After inactivity disconnection one needs to also remove the device. If this process can be automated, the controller might be usable on Windows also.
 
-gearVR Controller runs on Raspian but might cause issues when it disconnects because of a signal loss. In this implementation, when yuo press the home button three times within 2 seocnds, the programs exits..
+gearVR Controller runs on Raspian but might cause issues when it disconnects because of a signal loss. In this implementation, when you press the Home button three times within 2 seocnds, the programs exits.
 
 gearVRC Controller can enter into a pairing stage that it will remain in and refuse any pairing attempts from Raspian or Windows. On Raspian, a system reboot might help. On Windows you need to remove the device so that the OS has no prior knowledge of the controller.
 
