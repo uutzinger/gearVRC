@@ -61,7 +61,7 @@ You can start virtual serial pors with null modem connection between the two por
 ```
 socat -d -d pty,rawer,echo=0,link=/tmp/ttyV0 pty,rawer,echo=0,link=/tmp/ttyV1
 ```
-The you can start gearVRC with
+Then you can start gearVRC with
 ```
 python gearVRC -s /tmp/ttyV0 -b 115200
 ```
@@ -72,7 +72,7 @@ putty
 ```
 and open serial port ```/tmp/ttyV1``` with baurate of ```115200```
 
-In Putty you can type ```v``` followed by ```CTRL-J``` abd response should be VRC version string.
+In Putty you can type ```v``` followed by ```CTRL-J``` and response should be VRC version string.
 
 You can type ```b10``` followed by ```CTRL-J``` and 10 lines of hex encoded acc,gyr,mag data should appear in terminal
 
