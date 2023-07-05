@@ -43,6 +43,8 @@ from copy import copy
 import serial_asyncio
 import re
 import msgpack
+import pathlib
+import json
 
 from bleak      import BleakClient, BleakScanner
 from bleak.exc  import BleakError
@@ -53,6 +55,7 @@ from pyIMU.quaternion import Vector3D, Quaternion
 from pyIMU.utilities import q2rpy, heading
 
 import zmq
+import zmq.asyncio
 
 if os.name != 'nt':
     import uvloop
@@ -122,6 +125,11 @@ MINYTOUCH                        = 0
 MAXXTOUCH                        = 1024
 MAXYTOUCH                        = 1024
 
+FUZZY_ACCEL_ZERO        = 10.0
+FUZZY_DELTA_ACCEL_ZERO  = 0.04
+FUZZY_GYRO_ZERO         = 0.08
+FUZZY_DELTA_GYRO_ZERO   = 0.003
+
 ################################################################
 # Support Functions
 ################################################################
@@ -152,13 +160,80 @@ def calibrate(data:Vector3D, offset:Vector3D, crosscorr=None):
     Expects crosscorr to be 3x3 numpy array
     '''
     # Bias
-    data -= offset
+    data = data-offset
     # Cross Correlation
     if crosscorr is not None:
         data = data.rotate(crosscorr)
 
     return data
 
+def readCalibration(filename):
+    #
+    with open(filename, 'r') as file:
+        d = json.load(file)
+
+    center = np.array([d['offset_x'],d['offset_y'],d['offset_z']])
+    correctionMat = np.empty([3,3])
+
+    correctionMat[0,0] = d['cMat_00']
+    correctionMat[0,1] = d['cMat_01']
+    correctionMat[0,2] = d['cMat_02']
+    correctionMat[1,0] = d['cMat_10']
+    correctionMat[1,1] = d['cMat_11']
+    correctionMat[1,2] = d['cMat_12']
+    correctionMat[2,0] = d['cMat_20']
+    correctionMat[2,1] = d['cMat_21']
+    correctionMat[2,2] = d['cMat_22']
+
+    return center, correctionMat
+
+def saveCalibration(filename, center, correctionMat):
+    #
+    d = {
+    "offset_x": center[0], 
+    "offset_y": center[1], 
+    "offset_z": center[2], 
+    "cMat_00":  correctionMat[0,0],
+    "cMat_01":  correctionMat[0,1],
+    "cMat_02":  correctionMat[0,2],
+    "cMat_10":  correctionMat[1,0],
+    "cMat_11":  correctionMat[1,1],
+    "cMat_12":  correctionMat[1,2],
+    "cMat_20":  correctionMat[2,0],
+    "cMat_21":  correctionMat[2,1],
+    "cMat_22":  correctionMat[2,2]
+    }
+
+    with open(filename, 'w') as file:
+        json.dump(d, file)
+
+def detectMotion(acc: float, gyr: float, acc_avg: float, gyr_avg:float) -> bool:
+        # Three Stage Motion Detection
+        # Original Code is from FreeIMU Processing example
+        # Some modifications and tuning
+        #
+        # 0. Acceleration Activity
+        # 1. Change in Acceleration
+        # 2. Gyration Activity
+        # 2. Change in Gyration
+
+        # ACCELEROMETER
+        # Absolute value
+        acc_test       = abs(acc)           > FUZZY_ACCEL_ZERO
+        # Sudden changes
+        acc_delta_test = abs(acc_avg - acc) > FUZZY_DELTA_ACCEL_ZERO
+
+        # GYROSCOPE
+        # Absolute value
+        gyr_test       = abs(gyr)           > FUZZY_GYRO_ZERO
+        # Sudden changes
+        gyr_delta_test = abs(gyr_avg - gyr) > FUZZY_DELTA_GYRO_ZERO
+        
+        # print(abs(acc), abs(acc_avg-acc), abs(gyr), abs(gyr_avg-gyr), acc_test, acc_delta_test, gyr_test, gyr_delta_test)
+
+        # Combine acceleration test, acceleration deviation test and gyro test
+        return (acc_test or acc_delta_test or gyr_test or gyr_delta_test)
+	
 # This will create readable text, for example to send numbers over serial connection
 def float_to_hex(f):
     '''Pack float into 8 characters representing '''
@@ -204,11 +279,7 @@ def disconnect_bluetooth_device(address):
     if os.name != 'nt':
         try:
             output = subprocess.check_output(["bluetoothctl", "disconnect", address], timeout=5, text=True)
-            lines  = output.strip().split("\n")
-            for line in lines:
-                if "Successful disconnected" in line:
-                    return True
-            return False        
+            return  True        
         except:
             return False
     else:
@@ -471,23 +542,79 @@ class gearVRC:
         #  bias is offset so that 0 is in the middle of the range
         #  cross correlation is cross axis sensitivity, diagonal elements are the scale
         #  scale is gain so that 1 is the maximum value and it is the diagonale of the cross correlation matrix
-        self.acc_offset          = Vector3D(0.,0.,0.)
-        self.acc_crosscorr       = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
-        self.gyr_offset          = Vector3D(-0.0104,-0.0135,-0.0391)
-        self.gyr_crosscorr       = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
-        self.mag_offset          = Vector3D(223,48.25,-35.5)
-        self.mag_crosscorr       = np.array(([1./1.045,0.,0.], [0.,1./0.961,0.], [0.,0.,1./0.994]))
+        # self.acc_offset          = Vector3D(0.,0.,0.)
+        # self.acc_crosscorr       = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
+        # # self.gyr_offset          = Vector3D(-0.0104,-0.0135,-0.0391)
+        # self.gyr_crosscorr       = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
+        # # self.mag_offset          = Vector3D(223,48.25,-35.5)
+        # self.mag_crosscorr       = np.array(([1./1.045,0.,0.], [0.,1./0.961,0.], [0.,0.,1./0.994]))
+        # #
+        # self.gyr_crosscorr       = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
+        # self.gyr_offset          = Vector3D(-0.0135,-0.0106, +0.040)
+        # self.mag_offset          = Vector3D(-48.25, 223,-35.5)
 
-        self.acc         = Vector3D(0.,0.,0.)
-        self.gyr         = Vector3D(0.,0.,0.)
-        self.mag         = Vector3D(0.,0.,0.)
-        self.gyr_average = Vector3D(0.,0.,0.)
+        self.current_directory = str(pathlib.Path(__file__).parent.absolute())
+
+        my_file = pathlib.Path(self.current_directory + '/Gyr.json')
+        if my_file.is_file():
+            self.logger.log(logging.INFO,'Loading Gyroscope Callibration from File...')
+            gyr_offset, gyr_crosscorr = readCalibration(my_file)
+        else:
+            self.logger.log(logging.INFO,'Loading default Gyroscope Callibration...')
+            gyr_crosscorr  = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
+            gyr_offset     = np.array(([-0.01335,-0.01048,0.03801]))
+
+        my_file = pathlib.Path(self.current_directory + '/Acc.json')
+        if my_file.is_file():
+            self.logger.log(logging.INFO,'Loading Accelerometer Callibration from File...')
+            acc_offset, acc_crosscorr = readCalibration(my_file)
+        else:
+            self.logger.log(logging.INFO,'Loading default Accelerometer Callibration...')
+            acc_crosscorr  = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
+            acc_offset     = np.array(([0.,0.,0.]))
+
+        my_file = pathlib.Path(self.current_directory + '/Mag.json')
+        if my_file.is_file():
+            self.logger.log(logging.INFO,'Loading Magnetomer Callibration from File...')
+            mag_offset, mag_crosscorr = readCalibration(my_file)
+        else:
+            self.logger.log(logging.INFO,'Loading default Magnetomer Callibration...')
+            mag_crosscorr  = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
+            mag_offset     = np.array(([-48.492,-222.802,-35.28]))
+
+        # Sort out Axes
+        # The offset and scales are measured in the original sensor corrodinate system
+        # We will need to adjust them to the device cooridnate system
+        # Adjustment is as following:
+        # acc -Y-X+Z
+        # gyr +Y+X-Z        
+        # mag -X+Y+Z
+        
+        self.acc_offset    = Vector3D(      -acc_offset[1],          -acc_offset[0],       acc_offset[2])
+        self.acc_crosscorr = np.array([     -acc_crosscorr[:,1],     -acc_crosscorr[:,0],  acc_crosscorr[:,2]])
+        self.acc_crosscorr = np.array([-self.acc_crosscorr[1,:],-self.acc_crosscorr[0,:],  acc_crosscorr[2,:]])
+
+        self.gyr_offset    = Vector3D(       gyr_offset[1],           gyr_offset[0],      -gyr_offset[2])
+        self.gyr_crosscorr = np.array([      gyr_crosscorr[:,1],      gyr_crosscorr[:,0], -gyr_crosscorr[:,2]])
+        self.gyr_crosscorr = np.array([ self.gyr_crosscorr[1,:], self.gyr_crosscorr[0,:], -gyr_crosscorr[2,:]])
+
+        self.mag_offset    = Vector3D(      -mag_offset[0],           mag_offset[1],       mag_offset[2])
+        self.mag_crosscorr = np.array([     -mag_crosscorr[:,0],      mag_crosscorr[:,1],  mag_crosscorr[:,2]])
+        self.mag_crosscorr = np.array([-self.mag_crosscorr[0,:], self.mag_crosscorr[1,:],  mag_crosscorr[2,:]])
+
+        self.gyr_offset_updated = False
+
+        self.acc           = Vector3D(0.,0.,0.)
+        self.gyr           = Vector3D(0.,0.,0.)
+        self.mag           = Vector3D(0.,0.,0.)
+        self.gyr_average   = Vector3D(0.,0.,0.)
+        self.acc_average   = Vector3D(0.,0.,0.)
 
         # Attitude fusion
-        self.AHRS                = Madgwick()
-        self.q                   = Quaternion(1.,0.,0.,0.)
-        self.heading             = 0.
-        self.rpy                 = Vector3D(0.,0.,0.)
+        self.AHRS          = Madgwick()
+        self.q             = Quaternion(1.,0.,0.,0.)
+        self.heading       = 0.
+        self.rpy           = Vector3D(0.,0.,0.)
 
     def handle_disconnect(self,client):
         self.logger.log(logging.INFO,'Client disconnected, Signaling...')
@@ -527,16 +654,12 @@ class gearVRC:
             if self._device is None:
                 if self.device_address is not None:
                     self._device = await BleakScanner.find_device_by_address(self.device_address, timeout=10.0)
-
+    
             # Connect to Device
             ###################
             if self._device is not None:
                 # Create client
                 self.logger.log(logging.INFO,'Found {}'.format(self.device_name))
-                if check_bluetooth_connected(self._device.address):
-                    self.logger.log(logging.INFO,'Device {} is alrady connected'.format(self.device_name))
-                    if disconnect_bluetooth_device(self._device.address):
-                        self.logger.log(logging.INFO,'Device {} is disconnected'.format(self.device_name))
                 self._client = BleakClient(self._device, disconnected_callback=self.handle_disconnect)
                 # Connect to device
                 if not (self._client is None):
@@ -573,6 +696,13 @@ class gearVRC:
                 if not self.finish_up: self.logger.log(logging.INFO,'Lost connection to {}'.format(self.device_name))            
 
             else: # Device not found
+                # there is chance the device is already connected ...
+                if self.device_address is not None:
+                    if check_bluetooth_connected(self.device_address):
+                        self.logger.log(logging.INFO,'Device {} is alrady connected'.format(self.device_name))
+                        if disconnect_bluetooth_device(self.device_address):
+                            self.logger.log(logging.INFO,'Device {} is disconnected'.format(self.device_name))
+
                 self.logger.log(logging.INFO,'{} not found. Retrying...'.format(self.device_name))
                 await asyncio.sleep(5)
 
@@ -882,7 +1012,7 @@ class gearVRC:
             self.gyrX = struct.unpack('<h', data[10:12])[0] * 0.001221791529 # 10000.0 * 0.017453292 / 14.285 / 1000.0 / 10. # rad/s
             self.gyrY = struct.unpack('<h', data[12:14])[0] * 0.001221791529 #
             self.gyrZ = struct.unpack('<h', data[14:16])[0] * 0.001221791529 #
-            self.magY = struct.unpack('<h', data[48:50])[0] * 0.06           # micro Tesla?, earth mag field 25..65 muTesla
+            self.magY = struct.unpack('<h', data[48:50])[0] * 0.06           # micro Tesla, earth mag field 25..65 muTesla
             self.magX = struct.unpack('<h', data[50:52])[0] * 0.06           #
             self.magZ = struct.unpack('<h', data[52:54])[0] * 0.06           #
 
@@ -895,10 +1025,10 @@ class gearVRC:
             # acc.z points downwards
             # -Y-X+Z (this coordinate system is non standard)
             #
-            # mag.x points to the right/east
-            # mag.y points to the user
+            # mag.x points to the user
+            # mag.y points to the right/left
             # mag.z points downwards
-            # -Y+X+Z
+            # -X+Y+Z
             #
             # gyr.x is counter clockwise around x
             # gyr.y is counter clockwise around y
@@ -917,11 +1047,13 @@ class gearVRC:
             #   gyr.y clockwise to the right gyr.x
             #   gyr.z clockwise downwards   -gyr.z
 
+            # acc -Y-X+Z
+            # gyr +Y+X-Z        
+            # mag -X+Y+Z
+
             self.acc = Vector3D(-self.accY, -self.accX,  self.accZ)
             self.gyr = Vector3D( self.gyrY,  self.gyrX, -self.gyrZ)
-            self.mag = Vector3D(-self.magY,  self.magX,  self.magZ)
-
-            self.gyr_average = 0.99*self.gyr_average + 0.01*self.gyr
+            self.mag = Vector3D(-self.magX,  self.magY,  self.magZ)
 
             self.dataAvailable.set()
             # self.reportingDataAvailable.set()
@@ -1036,7 +1168,30 @@ class gearVRC:
             # await asyncio.sleep(0.05)
 
         self.logger.log(logging.INFO, 'ESC Detection stopped')
-            
+
+    async def update_gyrOffset(self):
+        '''
+        Safe new Gyroscope offset if necessary
+        '''
+
+        self.logger.log(logging.INFO, 'Starting Gyroscope Bias Saving Task...')
+
+        # Keep track of last time saved
+        last_Time = time.perf_counter()
+
+        while not self.finish_up:
+
+            print('B', end='', flush=True)
+
+            if self.gyr_offset_updated:
+                my_file = pathlib.Path(self.current_directory + '/Gyr.json')
+                saveCalibration(my_file, self.gyr_offset, self.gyr_crosscorr)
+                self.gyr_offset_updated = False
+
+            await asyncio.sleep(60.0)
+
+        self.logger.log(logging.INFO, 'Gyroscope Bias Saving Task stopped')
+
     async def update_virtual(self):
         ''' 
         Create Virtual Wheel
@@ -1212,7 +1367,7 @@ class gearVRC:
 
         while not self.finish_up:
 
-            print('F', end='', flush=True)
+            # print('F', end='', flush=True)
 
             currentTime = time.perf_counter()
 
@@ -1239,8 +1394,16 @@ class gearVRC:
             self.mag = calibrate(data=self.mag, offset=self.mag_offset, crosscorr=self.mag_crosscorr)
             self.gyr = calibrate(data=self.gyr, offset=self.gyr_offset, crosscorr=self.gyr_crosscorr)
 
+            self.gyr_average = 0.99*self.gyr_average + 0.01*self.gyr
+            self.acc_average = 0.99*self.acc_average + 0.01*self.acc
+            moving = detectMotion(self.acc.norm, self.gyr.norm, self.acc_average.norm, self.gyr_average.norm)
+
+            if not moving:
+                self.gyr_offset = 0.99*self.gyr_offset + 0.01*self.gyr
+                self.gyr_offset_updated = True
+
             if dt > 1.0: 
-                # First run or reconnection, need AHRS algorythem to initilize again
+                # First run or reconnection, need AHRS algorythem to initialize
                 if (self.mag.norm >  MAGFIELD_MAX) or (self.mag.norm < MAGFIELD_MIN):
                     # Mag is not in acceptable range
                     self.q = self.AHRS.update(acc=self.acc,gyr=self.gyr,mag=None,dt=-1)
@@ -1353,8 +1516,8 @@ class gearVRC:
                 msg_out+= 'Time  {:>10.6f}, {:>10.6f}, {:>10.6f}\n'.format(self.sensorTime, self.aTime, self.bTime)
                 msg_out+= 'dt    {:>10.6f}, {:>10.6f}, {:>10.6f}\n'.format(self.delta_sensorTime, self.delta_aTime, self.delta_bTime)
                 msg_out+= 'Accel {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.accX,self.accY,self.accZ)
-                msg_out+= 'Mag   {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.magX,self.magY,self.magZ)
                 msg_out+= 'Gyro  {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.gyrX,self.gyrY,self.gyrZ)
+                msg_out+= 'Magno {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.magX,self.magY,self.magZ)
 
                 msg_out+= '-------------------------------------------------\n'
 
@@ -1391,10 +1554,12 @@ class gearVRC:
                     msg_out+= '-------------------------------------------------\n'
 
                 if args.fusion:
-                    msg_out+= 'Acc     {:>8.3f} {:>8.3f} {:>8.3f} N  {:>8.3f}\n'.format(self.acc.x,self.acc.y,self.acc.z,self.acc.norm)
-                    msg_out+= 'Mag     {:>8.3f} {:>8.3f} {:>8.3f} N  {:>8.3f}\n'.format(self.mag.x,self.mag.y,self.mag.z,self.mag.norm)
-                    msg_out+= 'Gyr     {:>8.3f} {:>8.3f} {:>8.3f} N  {:>8.3f}\n'.format(self.gyr.x*RAD2DEG,self.gyr.y*RAD2DEG,self.gyr.z*RAD2DEG,self.gyr.norm*RAD2DEG)
-                    msg_out+= 'Gyr avg {:>8.5f} {:>8.5f} {:>8.5f} RPM{:>8.3f}\n'.format(self.gyr_average.x*RAD2DEG, self.gyr_average.y*RAD2DEG, self.gyr_average.z*RAD2DEG, self.gyr.norm*60/TWOPI)
+                    msg_out+= 'Acc     {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.acc.x,self.acc.y,self.acc.z,self.acc.norm)
+                    msg_out+= 'Gyr     {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.gyr.x*RAD2DEG,self.gyr.y*RAD2DEG,self.gyr.z*RAD2DEG,self.gyr.norm*RAD2DEG)
+                    msg_out+= 'Mag     {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.mag.x,self.mag.y,self.mag.z,self.mag.norm)
+                    msg_out+= 'Acc avg {:>8.5f} {:>8.5f} {:>8.5f} N:  {:>8.3f}\n'.format(self.acc_average.x, self.acc_average.y, self.acc_average.z, self.acc_average.norm)
+                    msg_out+= 'Gyr avg {:>8.5f} {:>8.5f} {:>8.5f} RPM:{:>8.3f}\n'.format(self.gyr_average.x*RAD2DEG, self.gyr_average.y*RAD2DEG, self.gyr_average.z*RAD2DEG, self.gyr_average.norm*60/TWOPI)
+                    msg_out+= 'Gyr bias{:>8.5f} {:>8.5f} {:>8.5f} RPM:{:>8.3f}\n'.format(self.gyr_offset.x*RAD2DEG, self.gyr_offset.y*RAD2DEG, self.gyr_offset.z*RAD2DEG, self.gyr_offset.norm*60/TWOPI)
 
                     msg_out+= 'Euler: R{:>6.1f} P{:>6.1f} Y{:>6.1f}, Heading {:>4.0f}\n'.format(
                                                     self.rpy.x*RAD2DEG, self.rpy.y*RAD2DEG, self.rpy.z*RAD2DEG, 
@@ -1411,7 +1576,7 @@ class gearVRC:
 
         self.logger.log(logging.INFO, 'Reporting stopped')
 
-    async def update_serial(self, reader, writer):
+    async def update_serial(self, args):
         '''
         Report latest fused data over serial connection
         This is formatted for freeIMU calibration GUI software
@@ -1423,7 +1588,7 @@ class gearVRC:
         
         while not self.finish_up:
 
-            print('S', end='', flush=True)
+            # print('S', end='', flush=True)
 
             msg_in = await reader.readline() # read a full line, needs to have /n at end of line (Ctrl-J in putty)
             line_in = msg_in.decode().strip()
@@ -1503,7 +1668,9 @@ class gearVRC:
         '''
         
         self.logger.log(logging.INFO, 'Creating ZMQ Publisher at \'tcp://*:{}\' ...'.format(args.zmqport))
-        socket = zmq.asyncio.Context().socket(zmq.PUB)
+        # breaks here
+        context = zmq.asyncio.Context()      
+        socket = context.socket(zmq.PUB)
         socket.bind("tcp://*:{}".format(args.zmqport))
 
         data_system  = gearSystemData()
@@ -1511,7 +1678,7 @@ class gearVRC:
         data_virtual = gearVirtualData()
         data_fusion  = gearFusionData()
 
-        zmq_lastTimeRate    = time.perf_counter()
+        zmq_lastTimeRate   = time.perf_counter()
         previous_zmqUpdate = time.perf_counter()
         zmq_updateCounts   = 0
 
@@ -1545,8 +1712,8 @@ class gearVRC:
             data_raw.magX = self.magX
             data_raw.magY = self.magY
             data_raw.magZ = self.magZ
-            data_raw.temp = self.temperature
-            data_raw.battery = self.battery_level
+            data_raw.temperature = self.temperature
+            data_raw.battery_level = self.battery_level
             data_raw.trigger = self.trigger
             data_raw.touch = self.touch
             data_raw.back = self.back
@@ -1561,7 +1728,9 @@ class gearVRC:
             data_raw.bTime = self.bTime
 
             raw_msgpack = msgpack.packb(data_raw)
+            print('ZEa', end='', flush=True)
             socket.send_multipart([b"raw", raw_msgpack])               
+            print('ZEb', end='', flush=True)
 
             # format the system data
             data_system.data_rate    = self.data_rate
@@ -1571,8 +1740,12 @@ class gearVRC:
             data_system.serial_rate  = self.serial_rate
             data_system.reporting_rate = self.report_rate
 
+            print('ZF', end='', flush=True)
+
             system_msgpack = msgpack.packb(data_system)
             socket.send_multipart([b"system", system_msgpack])               
+
+            print('ZG', end='', flush=True)
 
             if args.virtual:
                 # await self.virtualDataAvailable.wait()
@@ -1597,6 +1770,8 @@ class gearVRC:
                 virtual_msgpack = msgpack.packb(data_virtual)               
                 socket.send_multipart([b"virtual", virtual_msgpack])               
 
+            print('ZH', end='', flush=True)
+
             if args.fusion:
                 # await self.fusedDataAvailable.wait()
                 # self.fusedDataAvailable.clear()
@@ -1611,7 +1786,9 @@ class gearVRC:
                 
                 fusion_msgpack = msgpack.packb(data_fusion)
                 socket.send_multipart([b"fusion", fusion_msgpack])               
-                
+
+            print('ZI', end='', flush=True)
+
         self.logger.log(logging.INFO, 'ZMQ stopped')
             
     async def handle_termination(self, tasks:None):
@@ -1628,7 +1805,8 @@ class gearVRC:
             self.logger.log(logging.INFO, 'Cancelling all Tasks...')
             await asyncio.sleep(1) # give some time for tasks to finish up
             for task in tasks:
-                task.cancel()
+                if task is not None:
+                    task.cancel()
 
     async def update_terminator(self, tasks):
         '''
@@ -1659,7 +1837,7 @@ async def main(args: argparse.Namespace):
     connection_task = asyncio.create_task(controller.update_connect())      # remain connected, will not terminate
     keepalive_task  = asyncio.create_task(controller.keep_alive())          # keep sensor alive, will not terminate
     escape_task     = asyncio.create_task(controller.update_EscSequence(counts=3, timeout=2.0)) # User can press Home 3 times to exit
-    
+
     tasks = [connection_task, keepalive_task, escape_task]
 
     if args.virtual:
@@ -1668,7 +1846,11 @@ async def main(args: argparse.Namespace):
 
     if args.fusion:
         fusion_task     = asyncio.create_task(controller.update_fusion())   # update pose, will not terminate
+        gyroffset_task  = asyncio.create_task(controller.update_gyrOffset())
         tasks.append(fusion_task)
+        tasks.append(gyroffset_task)
+    else:
+        gyroffset_task = None
 
     if args.report > 0:
         reporting_task  = asyncio.create_task(controller.update_report(args))   # report new data, will not terminate
@@ -1682,7 +1864,7 @@ async def main(args: argparse.Namespace):
         zmq_task     = asyncio.create_task(controller.update_zmq(args))   # update zmq, will not terminate
         tasks.append(zmq_task)
  
-    terminator_task = asyncio.create_task(controller.update_terminator([keepalive_task])) # make sure we shutdown keep alive in timely fashion (has long sleep)
+    terminator_task = asyncio.create_task(controller.update_terminator([keepalive_task, gyroffset_task])) # make sure we shutdown keep alive in timely fashion (has long sleep)
     tasks.append(terminator_task)
 
     # Set up a Control-C handler to gracefully stop the program
@@ -1756,7 +1938,7 @@ if __name__ == '__main__':
         dest = 'fusion',
         action='store_true',
         help='turns on IMU data fusion',
-        default = False
+        default = True
     )
 
     parser.add_argument(
