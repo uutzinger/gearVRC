@@ -393,7 +393,7 @@ class dict2obj:
     def __init__(self, data):
         for key, value in data.items():
             if isinstance(value, dict):
-                setattr(self, key, NestedObject(value))
+                setattr(self, key, dict2obj(value))
             else:
                 setattr(self, key, value)
 
@@ -1771,6 +1771,8 @@ class gearVRC:
             raw_msgpack = msgpack.packb(dict_raw)
             socket.send_multipart([b"raw", raw_msgpack])               
 
+            print('ZR', end='', flush=True)
+
             # format the system data
             data_system.data_rate    = self.data_rate
             data_system.virtual_rate = self.virtual_rate
@@ -1779,13 +1781,12 @@ class gearVRC:
             data_system.serial_rate  = self.serial_rate
             data_system.reporting_rate = self.report_rate
 
-            print('ZF', end='', flush=True)
 
             dict_system = obj2dict(data_system)
             system_msgpack = msgpack.packb(dict_system)
             socket.send_multipart([b"system", system_msgpack])               
 
-            print('ZG', end='', flush=True)
+            print('ZS', end='', flush=True)
 
             if args.virtual:
                 # await self.virtualDataAvailable.wait()
@@ -1807,10 +1808,12 @@ class gearVRC:
                 data_virtual.isRotating = self.isRotating
                 data_virtual.clockwise = self.clockwise
         
-                virtual_msgpack = msgpack.packb(obj2dict(vars(data_virtual)))               
-                socket.send_multipart([b"virtual", virtual_msgpack])               
+                dict_virtual = obj2dict(data_virtual)
+                virtual_msgpack = msgpack.packb(dict_virtual)
+                socket.send_multipart([b"virtual", virtual_msgpack])          
 
-            print('ZH', end='', flush=True)
+
+            print('ZV', end='', flush=True)
 
             if args.fusion:
                 # await self.fusedDataAvailable.wait()
@@ -1824,10 +1827,11 @@ class gearVRC:
                 data_fusion.heading = self.heading
                 data_fusion.q = self.q
                 
-                fusion_msgpack = msgpack.packb(obj2dict(vars(data_fusion)))
+                dict_fusion = obj2dict(data_fusion)
+                fusion_msgpack = msgpack.packb(dict_fusion)
                 socket.send_multipart([b"fusion", fusion_msgpack])               
 
-            print('ZI', end='', flush=True)
+            print('ZF', end='', flush=True)
 
         self.logger.log(logging.INFO, 'ZMQ stopped')
             
@@ -2016,7 +2020,7 @@ if __name__ == '__main__':
         type = int,
         metavar='<zmqport>',
         help='port used by ZMQ, e.g. 5556',
-        default = None
+        default = 5556
     )
 
     args = parser.parse_args()
