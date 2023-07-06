@@ -363,14 +363,38 @@ class gearVirtualData(object):
 class gearFusionData(object):
     '''AHRS fusion data'''
     def __init__(self, 
-                 acc: Vector3D = Vector3D(0,0,0), mag: Vector3D = Vector3D(0,0,0), gyr: Vector3D = Vector3D(0,0,0), 
-                 rpy: Vector3D = Vector3D(0,0,0), heading: float = 0.0, q: Quaternion = Quaternion(1,0,0,00)) -> None:
+                 acc: Vector3D = Vector3D(0.,0.,0.), 
+                 mag: Vector3D = Vector3D(0.,0.,0.), 
+                 gyr: Vector3D = Vector3D(0.,0.,0.), 
+                 rpy: Vector3D = Vector3D(0.,0.,0.), 
+                 heading: float = 0.0, 
+                 q: Quaternion = Quaternion(1.,0.,0.,0.)) -> None:
         self.acc            = acc
         self.mag            = mag
         self.gyr            = gyr
         self.rpy            = rpy
         self.heading        = heading
         self.q              = q
+
+def obj2dict(obj):
+    # decoding object variables to nested dict 
+    if isinstance(obj, dict):
+        return {k: obj2dict(v) for k, v in obj.items()}
+    elif hasattr(obj, '__dict__'):
+        return obj2dict(vars(obj))
+    elif isinstance(obj, list):
+        return [obj2dict(item) for item in obj]
+    else:
+        return obj
+
+class dict2obj:
+    def __init__(self, data):
+        for key, value in data.items():
+            if isinstance(value, dict):
+                setattr(self, key, NestedObject(value))
+            else:
+                setattr(self, key, value)
+
 
 ################################################################
 # gearVRC 
@@ -1727,7 +1751,7 @@ class gearVRC:
             data_raw.aTime = self.aTime
             data_raw.bTime = self.bTime
 
-            raw_msgpack = msgpack.packb(data_raw)
+            raw_msgpack = msgpack.packb(obj2dict(vars(data_raw)))
             print('ZEa', end='', flush=True)
             socket.send_multipart([b"raw", raw_msgpack])               
             print('ZEb', end='', flush=True)
@@ -1742,7 +1766,7 @@ class gearVRC:
 
             print('ZF', end='', flush=True)
 
-            system_msgpack = msgpack.packb(data_system)
+            system_msgpack = msgpack.packb(obj2dict(vars(data_system)))
             socket.send_multipart([b"system", system_msgpack])               
 
             print('ZG', end='', flush=True)
@@ -1767,7 +1791,7 @@ class gearVRC:
                 data_virtual.isRotating = self.isRotating
                 data_virtual.clockwise = self.clockwise
         
-                virtual_msgpack = msgpack.packb(data_virtual)               
+                virtual_msgpack = msgpack.packb(obj2dict(vars(data_virtual)))               
                 socket.send_multipart([b"virtual", virtual_msgpack])               
 
             print('ZH', end='', flush=True)
@@ -1784,7 +1808,7 @@ class gearVRC:
                 data_fusion.heading = self.heading
                 data_fusion.q = self.q
                 
-                fusion_msgpack = msgpack.packb(data_fusion)
+                fusion_msgpack = msgpack.packb(obj2dict(vars(data_fusion)))
                 socket.send_multipart([b"fusion", fusion_msgpack])               
 
             print('ZI', end='', flush=True)
