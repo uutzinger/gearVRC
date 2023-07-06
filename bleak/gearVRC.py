@@ -159,15 +159,17 @@ def calibrate(data:Vector3D, offset:Vector3D, crosscorr=None):
     Expects data and bias to be a Vector3D
     Expects crosscorr to be 3x3 numpy array
     '''
+
     # Bias
-    data = data-offset
+    d = copy(data)               # we do not want input parameter to change globaly
+    d = d-offset
     # Cross Correlation
     if crosscorr is not None:
-        data = data.rotate(crosscorr)
+        d = d.rotate(crosscorr)
 
-    return data
+    return d
 
-def readCalibration(filename):
+def loadCalibration(filename):
     #
     with open(filename, 'r') as file:
         d = json.load(file)
@@ -188,7 +190,7 @@ def readCalibration(filename):
     return center, correctionMat
 
 def saveCalibration(filename, center, correctionMat):
-    #
+
     d = {
     "offset_x": center[0], 
     "offset_y": center[1], 
@@ -558,7 +560,7 @@ class gearVRC:
         my_file = pathlib.Path(self.current_directory + '/Gyr.json')
         if my_file.is_file():
             self.logger.log(logging.INFO,'Loading Gyroscope Callibration from File...')
-            gyr_offset, gyr_crosscorr = readCalibration(my_file)
+            gyr_offset, gyr_crosscorr = loadCalibration(my_file)
         else:
             self.logger.log(logging.INFO,'Loading default Gyroscope Callibration...')
             gyr_crosscorr  = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
@@ -567,7 +569,7 @@ class gearVRC:
         my_file = pathlib.Path(self.current_directory + '/Acc.json')
         if my_file.is_file():
             self.logger.log(logging.INFO,'Loading Accelerometer Callibration from File...')
-            acc_offset, acc_crosscorr = readCalibration(my_file)
+            acc_offset, acc_crosscorr = loadCalibration(my_file)
         else:
             self.logger.log(logging.INFO,'Loading default Accelerometer Callibration...')
             acc_crosscorr  = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
@@ -576,7 +578,7 @@ class gearVRC:
         my_file = pathlib.Path(self.current_directory + '/Mag.json')
         if my_file.is_file():
             self.logger.log(logging.INFO,'Loading Magnetomer Callibration from File...')
-            mag_offset, mag_crosscorr = readCalibration(my_file)
+            mag_offset, mag_crosscorr = loadCalibration(my_file)
         else:
             self.logger.log(logging.INFO,'Loading default Magnetomer Callibration...')
             mag_crosscorr  = np.array(([1.,0.,0.], [0.,1.,0.], [0.,0.,1.]))
@@ -590,17 +592,24 @@ class gearVRC:
         # gyr +Y+X-Z        
         # mag -X+Y+Z
         
-        self.acc_offset    = Vector3D(      -acc_offset[1],          -acc_offset[0],       acc_offset[2])
-        self.acc_crosscorr = np.array([     -acc_crosscorr[:,1],     -acc_crosscorr[:,0],  acc_crosscorr[:,2]])
-        self.acc_crosscorr = np.array([-self.acc_crosscorr[1,:],-self.acc_crosscorr[0,:],  acc_crosscorr[2,:]])
+        # self.acc_offset    = Vector3D(      -acc_offset[1],          -acc_offset[0],            acc_offset[2])
+        # self.acc_crosscorr = np.array([     -acc_crosscorr[:,1],     -acc_crosscorr[:,0],       acc_crosscorr[:,2]])
+        # self.acc_crosscorr = np.array([-self.acc_crosscorr[1,:],-self.acc_crosscorr[0,:],  self.acc_crosscorr[2,:]])
 
-        self.gyr_offset    = Vector3D(       gyr_offset[1],           gyr_offset[0],      -gyr_offset[2])
-        self.gyr_crosscorr = np.array([      gyr_crosscorr[:,1],      gyr_crosscorr[:,0], -gyr_crosscorr[:,2]])
-        self.gyr_crosscorr = np.array([ self.gyr_crosscorr[1,:], self.gyr_crosscorr[0,:], -gyr_crosscorr[2,:]])
+        # self.gyr_offset    = Vector3D(       gyr_offset[1],           gyr_offset[0],           -gyr_offset[2])
+        # self.gyr_crosscorr = np.array([      gyr_crosscorr[:,1],      gyr_crosscorr[:,0],      -gyr_crosscorr[:,2]])
+        # self.gyr_crosscorr = np.array([ self.gyr_crosscorr[1,:], self.gyr_crosscorr[0,:], -self.gyr_crosscorr[2,:]])
 
-        self.mag_offset    = Vector3D(      -mag_offset[0],           mag_offset[1],       mag_offset[2])
-        self.mag_crosscorr = np.array([     -mag_crosscorr[:,0],      mag_crosscorr[:,1],  mag_crosscorr[:,2]])
-        self.mag_crosscorr = np.array([-self.mag_crosscorr[0,:], self.mag_crosscorr[1,:],  mag_crosscorr[2,:]])
+        # self.mag_offset    = Vector3D(      -mag_offset[0],           mag_offset[1],            mag_offset[2])
+        # self.mag_crosscorr = np.array([     -mag_crosscorr[:,0],      mag_crosscorr[:,1],       mag_crosscorr[:,2]])
+        # self.mag_crosscorr = np.array([-self.mag_crosscorr[0,:], self.mag_crosscorr[1,:],  self.mag_crosscorr[2,:]])
+
+        self.acc_offset    = Vector3D(acc_offset)
+        self.gyr_offset    = Vector3D(gyr_offset)
+        self.mag_offset    = Vector3D(mag_offset)
+        self.acc_crosscorr = acc_crosscorr
+        self.gyr_crosscorr = gyr_crosscorr
+        self.mag_crosscorr = mag_crosscorr
 
         self.gyr_offset_updated = False
 
@@ -1055,6 +1064,14 @@ class gearVRC:
             self.gyr = Vector3D( self.gyrY,  self.gyrX, -self.gyrZ)
             self.mag = Vector3D(-self.magX,  self.magY,  self.magZ)
 
+            self.gyr_average = 0.99*self.gyr_average + 0.01*self.gyr
+            self.acc_average = 0.99*self.acc_average + 0.01*self.acc
+            moving = detectMotion(self.acc.norm, self.gyr.norm, self.acc_average.norm, self.gyr_average.norm)
+
+            if not moving:
+                self.gyr_offset = 0.99*self.gyr_offset + 0.01*self.gyr
+                self.gyr_offset_updated = True
+
             self.dataAvailable.set()
             # self.reportingDataAvailable.set()
 
@@ -1065,7 +1082,7 @@ class gearVRC:
 
     def handle_batteryData(self, characteristic: BleakGATTCharacteristic, data: bytearray):
         
-        print('B', end='', flush=True)
+        # print('B', end='', flush=True)
 
         self.battery_level = int.from_bytes(data,'big')
 
@@ -1181,10 +1198,15 @@ class gearVRC:
 
         while not self.finish_up:
 
-            print('B', end='', flush=True)
+            print('Bias', end='', flush=True)
 
             if self.gyr_offset_updated:
                 my_file = pathlib.Path(self.current_directory + '/Gyr.json')
+                # gyr_offset = copy(self.gyr_offset)
+                # gyr_offset = Vector3D(gyr_offset.y,gyr_offset.x,-gyr_offset.z)
+                # gyr_crosscorr = np.array([ self.gyr_crosscorr[:,1], self.gyr_crosscorr[:,0], -self.gyr_crosscorr[:,2]])
+                # gyr_crosscorr = np.array([      gyr_crosscorr[1,:],      gyr_crosscorr[0,:],      -gyr_crosscorr[2,:]])
+
                 saveCalibration(my_file, self.gyr_offset, self.gyr_crosscorr)
                 self.gyr_offset_updated = False
 
@@ -1390,36 +1412,29 @@ class gearVRC:
             previous_fusionTime = copy(self.sensorTime) # keep track of last sensor time
 
             # Calibrate IMU Data
-            self.acc = calibrate(data=self.acc, offset=self.acc_offset, crosscorr=self.acc_crosscorr)
-            self.mag = calibrate(data=self.mag, offset=self.mag_offset, crosscorr=self.mag_crosscorr)
-            self.gyr = calibrate(data=self.gyr, offset=self.gyr_offset, crosscorr=self.gyr_crosscorr)
-
-            self.gyr_average = 0.99*self.gyr_average + 0.01*self.gyr
-            self.acc_average = 0.99*self.acc_average + 0.01*self.acc
-            moving = detectMotion(self.acc.norm, self.gyr.norm, self.acc_average.norm, self.gyr_average.norm)
-
-            if not moving:
-                self.gyr_offset = 0.99*self.gyr_offset + 0.01*self.gyr
-                self.gyr_offset_updated = True
+            self.acc_cal = calibrate(data=self.acc, offset=self.acc_offset, crosscorr=self.acc_crosscorr)
+            self.mag_cal = calibrate(data=self.mag, offset=self.mag_offset, crosscorr=self.mag_crosscorr)
+            self.gyr_cal = calibrate(data=self.gyr, offset=self.gyr_offset, crosscorr=self.gyr_crosscorr)
 
             if dt > 1.0: 
                 # First run or reconnection, need AHRS algorythem to initialize
-                if (self.mag.norm >  MAGFIELD_MAX) or (self.mag.norm < MAGFIELD_MIN):
+                if (self.mag_cal.norm >  MAGFIELD_MAX) or (self.mag_cal.norm < MAGFIELD_MIN):
                     # Mag is not in acceptable range
-                    self.q = self.AHRS.update(acc=self.acc,gyr=self.gyr,mag=None,dt=-1)
+                    self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=None,dt=-1)
                 else:
-                    self.q = self.AHRS.update(acc=self.acc,gyr=self.gyr,mag=None,dt=-1)
+                    self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=self.mag_cal,dt=-1)
+                    # self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=None,dt=-1)
 
             else:
-                if (self.mag.norm >  MAGFIELD_MAX) or (self.mag.norm < MAGFIELD_MIN):
+                if (self.mag_cal.norm >  MAGFIELD_MAX) or (self.mag_cal.norm < MAGFIELD_MIN):
                     # Mag not in acceptable range
-                    self.q = self.AHRS.update(acc=self.acc,gyr=self.gyr,mag=None,dt=dt)
+                    self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=None,dt=dt)
                 else:
-                    self.q = self.AHRS.update(acc=self.acc,gyr=self.gyr,mag=None,dt=dt)
+                    self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=self.mag_cal,dt=dt)
+                    # self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=None,dt=dt)
 
 
-            # stuck here
-            self.heading=heading(pose=self.q, mag=self.mag, declination=DECLINATION)
+            self.heading=heading(pose=self.q, mag=self.mag_cal, declination=DECLINATION)
             self.rpy=q2rpy(pose=self.q)
 
             # self.fusedDataAvailable.set()
@@ -1515,9 +1530,13 @@ class gearVRC:
 
                 msg_out+= 'Time  {:>10.6f}, {:>10.6f}, {:>10.6f}\n'.format(self.sensorTime, self.aTime, self.bTime)
                 msg_out+= 'dt    {:>10.6f}, {:>10.6f}, {:>10.6f}\n'.format(self.delta_sensorTime, self.delta_aTime, self.delta_bTime)
-                msg_out+= 'Accel {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.accX,self.accY,self.accZ)
-                msg_out+= 'Gyro  {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.gyrX,self.gyrY,self.gyrZ)
-                msg_out+= 'Magno {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.magX,self.magY,self.magZ)
+
+                msg_out+= 'Accel     {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.acc.x,self.acc.y,self.acc.z)
+                msg_out+= 'Gyro      {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.gyr.x,self.gyr.y,self.gyr.z)
+                msg_out+= 'Magno     {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.mag.x,self.mag.y,self.mag.z)
+                msg_out+= 'Accel avg {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.acc_average.x, self.acc_average.y, self.acc_average.z, self.acc_average.norm)
+                msg_out+= 'Gyro  avg {:>8.3f} {:>8.3f} {:>8.3f} RPM:{:>8.3f}\n'.format(self.gyr_average.x, self.gyr_average.y, self.gyr_average.z, self.gyr_average.norm*60./TWOPI)
+                msg_out+= 'Gyro bias {:>8.3f} {:>8.3f} {:>8.3f} RPM:{:>8.3f}\n'.format(self.gyr_offset.x, self.gyr_offset.y, self.gyr_offset.z, self.gyr_offset.norm*60./TWOPI)
 
                 msg_out+= '-------------------------------------------------\n'
 
@@ -1554,13 +1573,10 @@ class gearVRC:
                     msg_out+= '-------------------------------------------------\n'
 
                 if args.fusion:
-                    msg_out+= 'Acc     {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.acc.x,self.acc.y,self.acc.z,self.acc.norm)
-                    msg_out+= 'Gyr     {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.gyr.x*RAD2DEG,self.gyr.y*RAD2DEG,self.gyr.z*RAD2DEG,self.gyr.norm*RAD2DEG)
-                    msg_out+= 'Mag     {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.mag.x,self.mag.y,self.mag.z,self.mag.norm)
-                    msg_out+= 'Acc avg {:>8.5f} {:>8.5f} {:>8.5f} N:  {:>8.3f}\n'.format(self.acc_average.x, self.acc_average.y, self.acc_average.z, self.acc_average.norm)
-                    msg_out+= 'Gyr avg {:>8.5f} {:>8.5f} {:>8.5f} RPM:{:>8.3f}\n'.format(self.gyr_average.x*RAD2DEG, self.gyr_average.y*RAD2DEG, self.gyr_average.z*RAD2DEG, self.gyr_average.norm*60/TWOPI)
-                    msg_out+= 'Gyr bias{:>8.5f} {:>8.5f} {:>8.5f} RPM:{:>8.3f}\n'.format(self.gyr_offset.x*RAD2DEG, self.gyr_offset.y*RAD2DEG, self.gyr_offset.z*RAD2DEG, self.gyr_offset.norm*60/TWOPI)
 
+                    msg_out+= 'Acc     {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.acc_cal.x,self.acc_cal.y,self.acc_cal.z,self.acc_cal.norm)
+                    msg_out+= 'Gyr     {:>8.3f} {:>8.3f} {:>8.3f} RPM:{:>8.3f}\n'.format(self.gyr_cal.x,self.gyr_cal.y,self.gyr_cal.z,self.gyr_cal.norm*60./TWOPI)
+                    msg_out+= 'Mag     {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.mag_cal.x,self.mag_cal.y,self.mag_cal.z,self.mag_cal.norm)
                     msg_out+= 'Euler: R{:>6.1f} P{:>6.1f} Y{:>6.1f}, Heading {:>4.0f}\n'.format(
                                                     self.rpy.x*RAD2DEG, self.rpy.y*RAD2DEG, self.rpy.z*RAD2DEG, 
                                                     self.heading*RAD2DEG)
@@ -1727,10 +1743,9 @@ class gearVRC:
             data_raw.aTime = self.aTime
             data_raw.bTime = self.bTime
 
-            raw_msgpack = msgpack.packb(data_raw)
-            print('ZEa', end='', flush=True)
+            dict_raw = obj2dict(data_raw)
+            raw_msgpack = msgpack.packb(dict_raw)
             socket.send_multipart([b"raw", raw_msgpack])               
-            print('ZEb', end='', flush=True)
 
             # format the system data
             data_system.data_rate    = self.data_rate
@@ -1742,7 +1757,8 @@ class gearVRC:
 
             print('ZF', end='', flush=True)
 
-            system_msgpack = msgpack.packb(data_system)
+            dict_system = obj2dict(data_system)
+            system_msgpack = msgpack.packb(dict_system)
             socket.send_multipart([b"system", system_msgpack])               
 
             print('ZG', end='', flush=True)
