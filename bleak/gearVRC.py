@@ -1222,7 +1222,7 @@ class gearVRC:
 
         while not self.finish_up:
 
-            print('Bias', end='', flush=True)
+            # print('Bias', end='', flush=True)
 
             if self.gyr_offset_updated:
                 my_file = pathlib.Path(self.current_directory + '/Gyr.json')
@@ -1724,7 +1724,7 @@ class gearVRC:
 
         while not self.finish_up:
 
-            print('Z', end='', flush=True)
+            # print('Z', end='', flush=True)
 
             currentTime = time.perf_counter()
 
@@ -1771,8 +1771,6 @@ class gearVRC:
             raw_msgpack = msgpack.packb(dict_raw)
             socket.send_multipart([b"raw", raw_msgpack])               
 
-            print('ZR', end='', flush=True)
-
             # format the system data
             data_system.data_rate    = self.data_rate
             data_system.virtual_rate = self.virtual_rate
@@ -1781,12 +1779,9 @@ class gearVRC:
             data_system.serial_rate  = self.serial_rate
             data_system.reporting_rate = self.report_rate
 
-
             dict_system = obj2dict(data_system)
             system_msgpack = msgpack.packb(dict_system)
             socket.send_multipart([b"system", system_msgpack])               
-
-            print('ZS', end='', flush=True)
 
             if args.virtual:
                 # await self.virtualDataAvailable.wait()
@@ -1812,9 +1807,6 @@ class gearVRC:
                 virtual_msgpack = msgpack.packb(dict_virtual)
                 socket.send_multipart([b"virtual", virtual_msgpack])          
 
-
-            print('ZV', end='', flush=True)
-
             if args.fusion:
                 # await self.fusedDataAvailable.wait()
                 # self.fusedDataAvailable.clear()
@@ -1830,8 +1822,6 @@ class gearVRC:
                 dict_fusion = obj2dict(data_fusion)
                 fusion_msgpack = msgpack.packb(dict_fusion)
                 socket.send_multipart([b"fusion", fusion_msgpack])               
-
-            print('ZF', end='', flush=True)
 
         self.logger.log(logging.INFO, 'ZMQ stopped')
             
