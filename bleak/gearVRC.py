@@ -37,7 +37,7 @@ import math
 import time
 import numpy as np
 import os
-from copy import copy, deepcopy
+from copy import copy
 import serial_asyncio
 import re
 import msgpack
@@ -159,7 +159,7 @@ def calibrate(data:Vector3D, offset:Vector3D, crosscorr=None):
     '''
 
     # Bias
-    d = deepcopy(data)   # we do not want input parameter to change globaly
+    d = copy(data)   # we do not want input parameter to change globaly
     d = d-offset
     # Cross Correlation
     if crosscorr is not None:
@@ -460,7 +460,7 @@ class gearVRC:
         if logger is not None: self.logger = logger
         else:                  self.logger = logging.getLogger('gearVRC')
 
-        self.VRMode                = VRMode
+        self.VRMode                 = VRMode
         self.HighResMode            = False
 
         # device sensors
@@ -504,7 +504,7 @@ class gearVRC:
 
         # Virtual wheel
         self.wheelPos               = 0     # Wheel position 0..63
-        self.previous_wheelPos     = 0
+        self.previous_wheelPos      = 0
         self.delta_wheelPos         = 0
         self.top                    = False # Wheel touched in top quadrant
         self.bottom                 = False # Wheel touched in bottom quadrant
@@ -523,8 +523,8 @@ class gearVRC:
         self.dirLeft                = False # Touching pad and moving to the left
         self.dirRight               = False # Touching pad and moving to the right
                         
-        self.previous_touchX       = 0  # touch pad X
-        self.previous_touchY       = 0  # touch pad Y
+        self.previous_touchX        = 0  # touch pad X
+        self.previous_touchY        = 0  # touch pad Y
 
 
         # Timing
