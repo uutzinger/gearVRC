@@ -418,8 +418,8 @@ class gearVRC:
         self.device_address                     = device_address
   
         # Bluetooth device and client
-        self.device                            = None
-        self.client                            = None
+        self.device                             = None
+        self.client                             = None
 
         self.generic_access_profile_service     = None
         self.device_name_characteristic         = None
@@ -448,6 +448,7 @@ class gearVRC:
         # Signals
         self.lost_connection        = asyncio.Event()
         self.dataAvailable          = asyncio.Event()
+        self.processedDataAvailable = asyncio.Event()
         # self.virtualDataAvailable   = asyncio.Event()
         # self.fusedDataAvailable     = asyncio.Event()
         # self.reportingDataAvailable = asyncio.Event()
@@ -944,7 +945,7 @@ class gearVRC:
         # Update rate
         self.data_updateCounts += 1
         self.data_deltaTime = startTime - self.data_lastTime
-        self.data_lastTime = copy(startTime)
+        self.data_lastTime = time.perf_counter()
 
         if startTime - self.data_lastTimeRate >= 1:
             self.data_rate = copy(self.data_updateCounts)
@@ -1160,6 +1161,270 @@ class gearVRC:
 
         self.logger.log(logging.INFO, 'ESC Detection stopped')
 
+    async def update_processing(self, args, counts=3, timeout=3.):
+        '''
+        Combining individual processing tasks into a single task
+        This reduced the amount of await dataavailable statements
+        
+        ESC sequence
+          Check if home button is pressed three times in a row within timeout seconds
+        fusion
+          Fuse IMU data to pose, roll, pitch, yaw, and heading
+        virtual    
+          Create Virtual Wheel
+          Create Extended Touchpad
+          Inspired from https://github.com/rdady/gear-vr-controller-linux
+          This routine can be throttled to lower update rate
+        '''
+
+        self.logger.log(logging.INFO, 'Starting Processing Task...')
+
+        # setup variables
+
+        # ESC sequence variables
+        previous_home           = False
+        home_updateCounts       = 0
+        home_pressedTime        = time.perf_counter()
+
+        # Virtual variables
+        if args.virtual:
+            previous_virtualUpdate  = time.perf_counter()
+            virtual_lastTimeRate    = time.perf_counter()
+            virtual_updateCounts    = 0
+            previous_wheelPos       = 0
+            previous_touchX         = 0
+            previous_touchY         = 0
+
+        # Fusion variables
+        if args.fusion:
+            fusion_updateCounts     = 0
+            fusion_lastTimeRate     = time.perf_counter()
+            previous_fusionTime     = time.perf_counter()
+
+        while not self.finish_up:
+
+            startTime = time.perf_counter()
+
+            await self.dataAvailable.wait()
+            self.dataAvailable.clear()
+
+            # ESC sequence
+            ###############################################################
+            if self.home == True:
+                if not previous_home:
+                    # Home button pressed
+                    elapsed = time.perf_counter() - home_pressedTime
+                    home_updateCounts += 1
+                    previous_home = True
+                    
+                    if home_updateCounts == 1:
+                        home_pressedTime = time.perf_counter()
+
+                    if (home_updateCounts == 2) and (elapsed > timeout):
+                        home_updateCounts = 1
+                        home_pressedTime = time.perf_counter()
+ 
+                    elif home_updateCounts == counts:
+                        if elapsed <= timeout:
+                            # ESC sequence detected, signal finish
+                            self.logger.log(logging.INFO, 'ESC detected')
+                            self.terminate.set()
+                        else:
+                            # To slow, ESC not detected, reset
+                            home_updateCounts = 0
+                else: 
+                    # it remains pressed
+                    pass
+            else:
+                # its not pressed
+                previous_home = False
+            
+            # Virtual
+            ###############################################################
+
+            if args.virtual:
+                
+                # We can throttle the update rate of the virtual features
+                if startTime - previous_virtualUpdate > VIRTUALUPDATEINTERVAL:
+                    previous_virtualUpdate = copy(startTime)
+
+                    start_virtualUpdate = time.perf_counter()
+                    
+                    virtual_updateCounts += 1
+                    if (startTime - virtual_lastTimeRate)>= 1.:
+                        self.virtual_rate = copy(virtual_updateCounts)
+                        virtual_lastTimeRate = copy(startTime)
+                        virtual_updateCounts = 0
+
+                    # Where are we touching the pad?
+                    if not (self.touchX == 0 and self.touchY==0): 
+
+                        # Virtual Wheel
+                        #  Detects if rim of touchpad is touched and where 0..63
+                        #  Detects finger moves along wheel (rotation clockwise or counter clockwise)
+                        #  Detects if rim touched on top, left, right, bottom
+
+                        x = self.touchX - WHEELRADIUS # horizontal distance from center of touchpad
+                        y = self.touchY - WHEELRADIUS # vertical distance from center
+                        l2 = x*x + y*y                # distance from center (squared)
+                        if l2 > RTHRESH2:             # Wheel is touched
+                            self.center = False
+                            phi = (math.atan2(y,x) + TWOPI) % TWOPI # angle 0 .. 2*pi from pointing to the right counter clockwise
+                            self.wheelPos = int(math.floor(phi / TWOPI * NUMWHEELPOS))
+                            # Top, Bottom, Left, Right
+                            if self.wheelPos > NUMWHEELPOS1_8:
+                                if self.wheelPos < NUMWHEELPOS3_8:
+                                    self.top    = False
+                                    self.left   = False
+                                    self.bottom = True
+                                    self.right  = False
+                                elif self.wheelPos < NUMWHEELPOS5_8:
+                                    self.top    = False
+                                    self.left   = True
+                                    self.bottom = False
+                                    self.right  = False
+                                elif self.wheelPos < NUMWHEELPOS7_8:
+                                    self.top    = True
+                                    self.left   = False
+                                    self.bottom = False
+                                    self.right  = False
+                                else: 
+                                    self.top    = False
+                                    self.left   = False
+                                    self.bottom = False
+                                    self.right  = True
+
+                            self.logger.log(logging.DEBUG, 'Wheel Position: {}'.format(self.wheelPos))
+
+                            self.delta_wheelPos = self.wheelPos - previous_wheelPos
+                            previous_wheelPos   = copy(self.wheelPos)
+                            # deal with discontinuity at 360/0:
+                            #   general formula with intervals along a circle in degrees is
+                            #   d_a = d_a - (360. * np.floor((d_a + 180.)/360.))
+                            #   resulting in d_a between < 180 and >=-180
+                            self.delta_wheelPos -= int(MAXWHEELPOS * np.floor((self.delta_wheelPos + MAXWHEELPOS2)/MAXWHEELPOS))
+                            self.logger.log(logging.DEBUG, 'Delta Wheel Position: {}'.format(self.delta_wheelPos))
+                            if (self.delta_wheelPos > 0):
+                                # rotating clock wise
+                                self.isRotating = True
+                                self.clockwise  = True
+                                self.logger.log(logging.DEBUG, 'Wheel rotating clockwise')
+                            elif (self.delta_wheelPos < 0):
+                                # rotating counter clock wise
+                                self.isRotating = True
+                                self.clockwise  = False
+                                self.logger.log(logging.DEBUG, 'Wheel rotating counter clockwise')
+                            else:
+                                self.isRotating = False
+                                self.logger.log(logging.DEBUG, 'Wheel not rotating')
+
+                        else: # wheel not touched, but touchpad is touched
+                        
+                            # Virtual Pad
+                            #  Detects scrolling of touchpad to create absolute 'mouse' position, allowing to reach larger field than touchpad allone        
+                            self.isRotating = False
+                            self.top        = False
+                            self.left       = False
+                            self.bottom     = False
+                            self.right      = False
+                            self.center     = True
+
+                        # Movement direction on touchpad
+                        # This assesses scrolling
+                        self.deltaX = self.touchX - previous_touchX
+                        self.deltaY = self.touchY - previous_touchY
+                        previous_touchX = copy(self.touchX)
+                        previous_touchY = copy(self.touchY)
+                        if (abs(self.deltaX) < 50) and (abs(self.deltaY) < 50): # disregard large jumps such as when lifting finger between scrolling
+                            self.absX += self.deltaX 
+                            self.absY += self.deltaY 
+                            self.absX  = clamp(self.absX, MINXTOUCH, MAXXTOUCH)
+                            self.absY  = clamp(self.absY, MINYTOUCH, MAXYTOUCH)
+                            # Left or Right?
+                            if (self.deltaX > 0):
+                                self.dirRight = True
+                                self.dirLeft  = False
+                            elif (self.deltaX < 0):
+                                self.dirLeft  = True
+                                self.dirRight = False
+                            else:
+                                self.dirLeft  = False
+                                self.dirRight = False
+                            # Up or Down?
+                            if (self.deltaY > 0):
+                                self.dirDown  = True
+                                self.dirUp    = False
+                            elif (self.deltaY < 0):
+                                self.dirUp    = True
+                                self.dirDown = False
+                            else:
+                                self.dirUp    = False
+                                self.dirDown  = False
+                        
+                    else: # Touch pad was not touched
+                        self.center   = False
+                        self.top      = False
+                        self.left     = False
+                        self.bottom   = False
+                        self.right    = False
+                        self.dirUp    = False
+                        self.dirDown  = False
+                        self.dirLeft  = False
+                        self.dirRight = False
+
+                    self.virtual_deltaTime = time.perf_counter() - start_virtualUpdate
+
+            # Fusion
+            ###############################################################
+
+            if args.fusion:
+
+                # update interval
+                start_fusionUpdate = time.perf_counter()
+
+                # fps
+                fusion_updateCounts += 1
+                if (startTime - fusion_lastTimeRate)>= 1.:
+                    self.fusion_rate = copy(fusion_updateCounts)
+                    fusion_lastTimeRate = copy(startTime)
+                    fusion_updateCounts = 0
+
+                # Fusion data interval, is computed from sensor provided time stamp
+                dt = self.sensorTime - previous_fusionTime # time interval between sensor data
+                previous_fusionTime = copy(self.sensorTime) # keep track of last sensor time
+
+                # Calibrate IMU Data
+                self.acc_cal = calibrate(data=self.acc, offset=self.acc_offset, crosscorr=self.acc_crosscorr)
+                self.mag_cal = calibrate(data=self.mag, offset=self.mag_offset, crosscorr=self.mag_crosscorr)
+                self.gyr_cal = calibrate(data=self.gyr, offset=self.gyr_offset, crosscorr=self.gyr_crosscorr)
+
+                if dt > 1.0: 
+                    # First run or reconnection, need AHRS algorythem to initialize
+                    if (self.mag_cal.norm >  MAGFIELD_MAX) or (self.mag_cal.norm < MAGFIELD_MIN):
+                        # Mag is not in acceptable range
+                        self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=None,dt=-1)
+                    else:
+                        self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=self.mag_cal,dt=-1)
+
+                else:
+                    if (self.mag_cal.norm >  MAGFIELD_MAX) or (self.mag_cal.norm < MAGFIELD_MIN):
+                        # Mag not in acceptable range
+                        self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=None,dt=dt)
+                    else:
+                        self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=self.mag_cal,dt=dt)
+
+                self.heading=heading(q=self.q, mag=self.mag_cal, declination=DECLINATION)
+                self.rpy=q2rpy(q=self.q)
+
+                self.fusion_deltaTime = time.perf_counter() - start_fusionUpdate
+
+            self.processedDataAvailable.set()
+            
+            await asyncio.sleep(0) # allow other tasks to run
+
+        self.logger.log(logging.INFO, 'Data processing stopped')
+        
+
     async def update_gyrOffset(self):
         '''
         Safe new Gyroscope offset if necessary
@@ -1193,7 +1458,6 @@ class gearVRC:
 
         self.logger.log(logging.INFO, 'Starting Virtual Task...')
 
-        previous_virtualUpdate  = time.perf_counter()
         virtual_lastTimeRate    = time.perf_counter()
         virtual_updateCounts    = 0
         previous_wheelPos       = 0
@@ -1208,9 +1472,6 @@ class gearVRC:
 
             # self.logger.log(logging.DEBUG, 'Waiting for sensor data')
             await self.dataAvailable.wait()
-
-            self.virtual_deltaTime = startTime - previous_virtualUpdate
-            previous_virtualUpdate = copy(startTime)
 
             virtual_updateCounts += 1
             if (startTime - virtual_lastTimeRate)>= 1.:
@@ -1334,6 +1595,8 @@ class gearVRC:
                 self.dirLeft  = False
                 self.dirRight = False
 
+            self.virtual_deltaTime = time.perf_counter() - startTime
+
             # Wait to next interval time
             sleepTime = self.virtual_updateInterval - (time.perf_counter() - startTime)
             await asyncio.sleep(max(0.,sleepTime))
@@ -1351,7 +1614,6 @@ class gearVRC:
 
         fusion_updateCounts = 0
         fusion_lastTimeRate  = time.perf_counter()
-        previous_fusionUpdate  = time.perf_counter()
         previous_fusionTime = time.perf_counter()
 
         while not self.finish_up:
@@ -1361,10 +1623,6 @@ class gearVRC:
             startTime = time.perf_counter()
 
             await self.dataAvailable.wait()
-
-            # update interval
-            self.fusion_deltaTime = startTime - previous_fusionUpdate
-            previous_fusionUpdate = copy(startTime)
 
             # fps
             fusion_updateCounts += 1
@@ -1400,6 +1658,9 @@ class gearVRC:
 
             self.heading=heading(q=self.q, mag=self.mag_cal, declination=DECLINATION)
             self.rpy=q2rpy(q=self.q)
+
+            # update interval
+            self.fusion_deltaTime = time.perf_counter() - startTime
 
             # Dont wait here, we want to fuse every IMU reading
             # Throtteling not implemented here
@@ -1445,17 +1706,13 @@ class gearVRC:
         self.logger.log(logging.INFO, 'Starting Reporting Task...')
 
         report_lastTimeRate    = time.perf_counter()
-        previous_reportUpdate = time.perf_counter()
-        report_updateCounts   = 0
+        report_updateCounts    = 0
 
         while not self.finish_up:
 
             startTime = time.perf_counter()
 
             await self.dataAvailable.wait()
-
-            self.report_deltaTime = startTime - previous_reportUpdate
-            previous_reportUpdate = copy(startTime)
 
             report_updateCounts += 1
             if (startTime - report_lastTimeRate)>= 1.:
@@ -1548,6 +1805,8 @@ class gearVRC:
 
             print(msg_out, flush=True)
 
+            self.report_deltaTime = time.perf_counter() - startTime
+
             # Wait to next interval time
             sleepTime = self.report_updateInterval - (time.perf_counter() - startTime)
             await asyncio.sleep(max(0.,sleepTime))
@@ -1596,17 +1855,11 @@ class gearVRC:
                         count = int(match_b.group(1))
                         
                         startTime = time.perf_counter()
-                        previous_serialUpdate = copy(startTime)
                         serial_updateCounts = 0
 
                         for i in range(count):
 
-                            startTime = time.perf_counter()
-
                             await self.dataAvailable.wait()
-
-                            self.serial_deltaTime = startTime - previous_serialUpdate
-                            previous_serialUpdate = copy(startTime)
 
                             serial_updateCounts += 1
                         
@@ -1628,8 +1881,9 @@ class gearVRC:
                                        magX_hex + magY_hex + magZ_hex + '\r\n'
                             msg_out=line_out.encode()
                             writer.write(msg_out)
-                    
-                        self.serial_rate = int(serial_updateCounts / (time.perf_counter() - startTime))
+
+                        self.serial_deltaTime = time.perf_counter() - startTime
+                        self.serial_rate = int(serial_updateCounts / self.serial_deltaTime)
                         serial_updateCounts = 0
                     else:
                         pass # unknown command
@@ -1674,7 +1928,8 @@ class gearVRC:
 
             startTime = time.perf_counter()
 
-            await self.dataAvailable.wait()
+            await self.processedDataAvailable.wait()
+            self.processedDataAvailable.clear()
 
             # update interval
             self.zmq_deltaTime = startTime - previous_zmqUpdate
@@ -1819,21 +2074,23 @@ async def main(args: argparse.Namespace):
     # They will run until stop signal is created, stop signal is indicated with event
     connection_task = asyncio.create_task(controller.update_connect())      # remain connected, will not terminate
     keepalive_task  = asyncio.create_task(controller.keep_alive())          # keep sensor alive, will not terminate
-    escape_task     = asyncio.create_task(controller.update_EscSequence(counts=3, timeout=2.0)) # User can press Home 3 times to exit
+    # escape_task     = asyncio.create_task(controller.update_EscSequence(counts=3, timeout=2.0)) # User can press Home 3 times to exit
+    processing_task     = asyncio.create_task(controller.update_processing(args=args, counts=3, timeout=2.0)) # User can press Home 3 times to exit
 
-    tasks = [connection_task, keepalive_task, escape_task]
+    # tasks = [connection_task, keepalive_task, escape_task]
+    tasks = [connection_task, keepalive_task, processing_task]
+    terminator_tasks = [keepalive_task]
 
-    if args.virtual:
-        virtual_task    = asyncio.create_task(controller.update_virtual())  # update wheel, will not terminate
-        tasks.append(virtual_task)
+    # if args.virtual:
+    #     virtual_task    = asyncio.create_task(controller.update_virtual())  # update wheel, will not terminate
+    #     tasks.append(virtual_task)
 
     if args.fusion:
-        fusion_task     = asyncio.create_task(controller.update_fusion())   # update pose, will not terminate
+        # fusion_task     = asyncio.create_task(controller.update_fusion())   # update pose, will not terminate
+        # tasks.append(fusion_task)
         gyroffset_task  = asyncio.create_task(controller.update_gyrOffset())
-        tasks.append(fusion_task)
         tasks.append(gyroffset_task)
-    else:
-        gyroffset_task = None
+        terminator_tasks.append(gyroffset_task)
 
     if args.report > 0:
         reporting_task  = asyncio.create_task(controller.update_report(args))   # report new data, will not terminate
@@ -1847,7 +2104,7 @@ async def main(args: argparse.Namespace):
         zmq_task     = asyncio.create_task(controller.update_zmq(args))   # update zmq, will not terminate
         tasks.append(zmq_task)
  
-    terminator_task = asyncio.create_task(controller.update_terminator([keepalive_task, gyroffset_task])) # make sure we shutdown keep alive in timely fashion (has long sleep)
+    terminator_task = asyncio.create_task(controller.update_terminator(terminator_tasks)) # make sure we shutdown keep alive in timely fashion (has long sleep)
     tasks.append(terminator_task)
 
     # Set up a Control-C handler to gracefully stop the program
