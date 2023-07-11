@@ -1718,7 +1718,7 @@ class gearVRC:
             report_updateCounts += 1
             if (startTime - report_lastTimeRate)>= 1.:
                 self.report_rate = copy(report_updateCounts)
-                report_lastTimeRate = copy(startTime)
+                report_lastTimeRate = time.perf_counter()
                 report_updateCounts = 0
 
             # Display the Data
