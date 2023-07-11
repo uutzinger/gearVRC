@@ -1472,6 +1472,7 @@ class gearVRC:
 
             # self.logger.log(logging.DEBUG, 'Waiting for sensor data')
             await self.dataAvailable.wait()
+            self.dataAvailable.clear()
 
             virtual_updateCounts += 1
             if (startTime - virtual_lastTimeRate)>= 1.:
@@ -1623,6 +1624,7 @@ class gearVRC:
             startTime = time.perf_counter()
 
             await self.dataAvailable.wait()
+            self.dataAvailable.clear()
 
             # fps
             fusion_updateCounts += 1
@@ -1707,6 +1709,7 @@ class gearVRC:
         report_updateCounts    = 0
 
         await self.dataAvailable.wait()
+        # no clear needed as we just wait for system to start
 
         while not self.finish_up:
 
@@ -2056,6 +2059,7 @@ class gearVRC:
         while not self.finish_up:
 
             await self.terminate.wait()
+            self.terminate.clear()
             await self.handle_termination(tasks=tasks)
 
         self.logger.log(logging.INFO, 'Terminator completed')
