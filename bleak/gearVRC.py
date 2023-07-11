@@ -1064,6 +1064,8 @@ class gearVRC:
 
             self.dataAvailable.set()
 
+            await asyncio.sleep(0)  # yield to other tasks
+
         else:
             self.logger.log(logging.INFO, 'Not enough values: {}'.format(len(data)))
             # switch to sensor mode
@@ -1157,7 +1159,7 @@ class gearVRC:
                 # its not pressed
                 previous_home = False
             
-            await asyncio.sleep(0)
+            await asyncio.sleep(0) # yield to other tasks
 
         self.logger.log(logging.INFO, 'ESC Detection stopped')
 
@@ -1419,7 +1421,6 @@ class gearVRC:
                 self.fusion_deltaTime = time.perf_counter() - start_fusionUpdate
 
             self.processedDataAvailable.set()
-            
             await asyncio.sleep(0) # allow other tasks to run
 
         self.logger.log(logging.INFO, 'Data processing stopped')
