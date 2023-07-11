@@ -12,10 +12,9 @@
 # Prerequisite:
 # A) python packages:
 #   $ sudo pip3 install 
-#           bleak more-itertools re, 
-#           uvloop, zmq asyncio pyserial-asyncio
-#           msgpack
-# B Linux) Pair Controller:
+#           bleak, uvloop, zmq asyncio pyserial-asyncio
+#           msgpack,re, pathlib, json, numpy
+# B Linux) Pair Controller (check README):
 #   $ bluetoothlctl
 #     scan on
 #     pair yourMAC
@@ -37,7 +36,6 @@ import signal
 import math
 import time
 import numpy as np
-import more_itertools as mit
 import os
 from copy import copy
 import serial_asyncio
@@ -1975,5 +1973,3 @@ if __name__ == '__main__':
         asyncio.run(main(args))
     except KeyboardInterrupt:
         pass
-
-# python gearVRC_C.py -n 'Gear VR Controller(17DB)'

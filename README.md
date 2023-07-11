@@ -79,16 +79,21 @@ You can type ```b10``` followed by ```CTRL-J``` and 10 lines of hex encoded acc,
 ### ZMQ
 When starting ZMQ with ```-z 5556``` you will have ```tcp://localhost:5556``` available to listen to ZMQ messages.
 
-There are 4 message types emitted:
-- system
-- raw
-- virtual
-- fusion
+There are 6 message types emitted as multi part message. You can subscribe to any of them:
+- ```system```
+- ```imu```
+- ```button```
+- ```touch```
+- ```virtual```
+- ```fusion```
 
-That data within the messages is serialized with messagepack.
+That data within the messages is serialized to binary with messagepack.
+Routines needed to decode that data and create python object out of them is provided.
 
 system message contains:
 ```
+	data.temperature
+	data.battery_level
 	data.data_rate 		Update rate of sensor readings
 	data.virtual_rate 	
 	data.fusion_rate 
@@ -97,19 +102,16 @@ system message contains:
 	data.reporting_rate
 ```
 
-raw message contains:
+imu message contains:
 ```
-	data.accX			Accelration
-	data.accY
-	data.accZ
-	data.gyrX			Gyration
-	data.gyrY 
-	data.gyrZ
-	data.magX			Magnetic field
-	data.magY
-	data.magZ
-	data.temp			Temperature
-	data.battery		Battery Level
+	data.time			Sensor time
+	data.acc			Accelration
+	data.gyr			Gyration
+	data.mag			Magnetic field
+```
+
+button message contains:
+```
 	data.trigger		Trigger button
 	data.touch			Touchpad pressed
 	data.back
@@ -117,14 +119,18 @@ raw message contains:
 	data.volume_up
 	data.volume_down
 	data.noButton
+```
+
+touch pad message contains
+```
+	data.time
 	data.touchX			Location on Touchpad
 	data.touchY
-	data.sensorTime		Time when reading was taken on sensor in seconds
-	data.aTime
-	data.bTime
 ```
+
 virtual Message contains:
 ```
+	data.time
 	data.absX		Absolute Position on TouchPad
 	data.absY
 	data.dirUp		Finger is moving up
@@ -143,6 +149,7 @@ virtual Message contains:
 
 fusion Message contains
 ```
+	data.time
 	data.acc 		Vector3D of acceleration
 	data.gyr		Vector3D of gyration
 	data.mag		Vector3D of mangnetic field
@@ -161,10 +168,8 @@ This software uses
 - asyncio
 - pyserial_asyncio
 - uvloop (on Windows uvloop is not loaded)
-- more_itertools
-- re
 - zmq and msgpack
-- pyIMU
+- pyIMU (repository from me)
 
 ### Windows
 On Windows you will need to delete any records of a previous installation in Settings prior to reading from the device. 
@@ -260,9 +265,9 @@ A module was added that detects wether the gearVR Controller is already connecte
 ### Calibration
 For calibration please check freeIMUCal in my repositories.
 The magnetometer is unusable without calibration. If you just need the touchpad and input keys, no calibration is needed. 
-The gyroscope has drift and future version will attempt detecting when the device does not move and calibrate the drift while it runs.
+The gyroscope has drift and the code attempts detecting when the device does not move and calibrates for the drift while it runs.
 
 ## pyIMU
 pyIMU is used to fuse IMU sensor data and calculates the device pose. The pose is best understood qw Roll Pitch and Yaw terms but its internally computed using quaternions.
 
-Using pyIMU it is possible (but not implemented) to calculate acceleration and velocity of the controller.
+Using pyIMU it is possible to calculate acceleration and velocity of the controller. That feature not tested yet.
