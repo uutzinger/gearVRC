@@ -45,7 +45,6 @@ import pathlib
 import json
 
 from bleak      import BleakClient, BleakScanner
-from bleak.exc  import BleakError
 from bleak.backends.characteristic import BleakGATTCharacteristic
 
 from pyIMU.madgwick import Madgwick
@@ -431,7 +430,7 @@ class gearVRC:
         self.firmware_version_characteristic    = None
         self.software_revision_characteristic   = None
         self.PnP_ID_characteristic              = None
-        self.batter_service                     = None
+        self.battery_service                    = None
         self.battery_level_characteristic       = None
         self.controller_data_service            = None
         self.controller_data_characteristic     = None
@@ -492,7 +491,7 @@ class gearVRC:
         
         # Other
         self.temperature            = 0.    # Device Temperature
-        self.battery_level          = 0.0   # Device Battery level
+        self.battery_level          = 0     # Device Battery level
 
         # Device buttons 
         self.touch                  = False # Touchpad has been pressed
@@ -775,9 +774,9 @@ class gearVRC:
         #################
         for s in self.client.services:
             if s.uuid == '0000180f-0000-1000-8000-00805f9b34fb':
-                self.batter_service = s
+                self.battery_service = s
         # read & notify
-        for c in self.batter_service.characteristics:
+        for c in self.battery_service.characteristics:
             if c.uuid == '00002a19-0000-1000-8000-00805f9b34fb':
                 self.battery_level_characteristic = c
 
@@ -1702,14 +1701,14 @@ class gearVRC:
         Adapt report to whether fusion, virtual, serial or zmq is enabled 
         '''
 
-        # print('R', end='', flush=True)
-
         self.logger.log(logging.INFO, 'Starting Reporting Task...')
 
         report_lastTimeRate    = time.perf_counter()
         report_updateCounts    = 0
 
         while not self.finish_up:
+
+            # print('R', end='', flush=True)
 
             startTime = time.perf_counter()
 
@@ -1804,6 +1803,7 @@ class gearVRC:
                     msg_out+= 'Q:     W{:>6.3f} X{:>6.3f} Y{:>6.3f} Z{:>6.3f}\n'.format(
                                                     self.q.w, self.q.x, self.q.y, self.q.z)
 
+ 
             print(msg_out, flush=True)
 
             self.report_deltaTime = time.perf_counter() - startTime
