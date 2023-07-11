@@ -1398,8 +1398,8 @@ class gearVRC:
                     self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=self.mag_cal,dt=dt)
 
 
-            self.heading=heading(pose=self.q, mag=self.mag_cal, declination=DECLINATION)
-            self.rpy=q2rpy(pose=self.q)
+            self.heading=heading(q=self.q, mag=self.mag_cal, declination=DECLINATION)
+            self.rpy=q2rpy(q=self.q)
 
             # Dont wait here, we want to fuse every IMU reading
             # Throtteling not implemented here
