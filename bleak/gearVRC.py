@@ -37,7 +37,7 @@ import math
 import time
 import numpy as np
 import os
-from copy import copy
+from copy import copy, deepcopy
 import serial_asyncio
 import re
 import msgpack
@@ -159,7 +159,7 @@ def calibrate(data:Vector3D, offset:Vector3D, crosscorr=None):
     '''
 
     # Bias
-    d = copy(data)               # we do not want input parameter to change globaly
+    d = deepcopy(data)   # we do not want input parameter to change globaly
     d = d-offset
     # Cross Correlation
     if crosscorr is not None:
@@ -1623,7 +1623,9 @@ class gearVRC:
                             magZ_hex=float_to_hex(self.mag.z)
 
                             # acc,gyr,mag
-                            line_out = accX_hex+accY_hex+accZ_hex+gyrX_hex+gyrY_hex+gyrZ_hex+magX_hex+magY_hex+magZ_hex+'\r\n'
+                            line_out = accX_hex + accY_hex + accZ_hex + \
+                                       gyrX_hex + gyrY_hex + gyrZ_hex + \
+                                       magX_hex + magY_hex + magZ_hex + '\r\n'
                             msg_out=line_out.encode()
                             writer.write(msg_out)
                     
