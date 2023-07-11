@@ -1706,13 +1706,13 @@ class gearVRC:
         report_lastTimeRate    = time.perf_counter()
         report_updateCounts    = 0
 
+        await self.dataAvailable.wait()
+
         while not self.finish_up:
 
             # print('R', end='', flush=True)
 
             startTime = time.perf_counter()
-
-            # await self.dataAvailable.wait()
 
             report_updateCounts += 1
             if (startTime - report_lastTimeRate)>= 1.:
