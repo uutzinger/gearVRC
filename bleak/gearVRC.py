@@ -1064,7 +1064,7 @@ class gearVRC:
 
             self.dataAvailable.set()
 
-            await asyncio.sleep(0)  # yield to other tasks
+            # await asyncio.sleep(0)  # yield to other tasks
 
         else:
             self.logger.log(logging.INFO, 'Not enough values: {}'.format(len(data)))
@@ -1713,7 +1713,7 @@ class gearVRC:
 
             startTime = time.perf_counter()
 
-            await self.dataAvailable.wait()
+            # await self.dataAvailable.wait()
 
             report_updateCounts += 1
             if (startTime - report_lastTimeRate)>= 1.:
@@ -1860,7 +1860,8 @@ class gearVRC:
 
                         for i in range(count):
 
-                            await self.dataAvailable.wait()
+                            await self.processedDataAvailable.wait()
+                            self.processedDataAvailable.clear()
 
                             serial_updateCounts += 1
                         
@@ -1920,7 +1921,6 @@ class gearVRC:
         data_fusion  = gearFusionData()
 
         zmq_lastTimeRate   = time.perf_counter()
-        previous_zmqUpdate = time.perf_counter()
         zmq_updateCounts   = 0
 
         while not self.finish_up:
@@ -1931,10 +1931,6 @@ class gearVRC:
 
             await self.processedDataAvailable.wait()
             self.processedDataAvailable.clear()
-
-            # update interval
-            self.zmq_deltaTime = startTime - previous_zmqUpdate
-            previous_zmqUpdate = copy(startTime)
 
             # fps
             zmq_updateCounts += 1
@@ -2025,6 +2021,9 @@ class gearVRC:
                 dict_fusion = obj2dict(data_fusion)
                 fusion_msgpack = msgpack.packb(dict_fusion)
                 socket.send_multipart([b"fusion", fusion_msgpack])               
+
+            # update interval
+            self.zmq_deltaTime = time.perf_counter() - startTime
 
             await asyncio.sleep(0)
 
