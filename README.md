@@ -11,13 +11,15 @@ The gearVR Controller disconnects after inactivity. Usually a short press on the
 
 Using gear VR Controller on Windows is cumbersome as one needs to remove the device from the system each time before using it. After inactivity disconnection one needs to also remove the device. If this process can be automated, the controller might be usable on Windows also.
 
-gearVR Controller runs on Raspian but might cause issues when it disconnects because of a signal loss. In this implementation, when you press the Home button three times within 2 seocnds, the programs exits.
+gearVR Controller runs on Raspian but might cause issues when it disconnects because of a signal loss. In this implementation, when you press the Home button three times within 2 seconds, the programs exits.
 
 gearVRC Controller can enter into a pairing stage that it will remain in and refuse any pairing attempts from Raspian or Windows. On Raspian, a system reboot might help. On Windows you need to remove the device so that the OS has no prior knowledge of the controller.
 
 If you are stuck, attempt unpairing and removing device in bluetoothctl. Remove battery from gear VR Controller, reboot the system and try fresh again until the entry in bluetoothctl matches the one listed below.
 
 At this time I do not know how to automate the solution for a system that no longer pairs with the controller.
+
+The update rate from the controller is between 45 and 72 Hz. If you restart the program it will switch in between those two numbers. It is not yet clear to me how to make sure we always get the same update rate.
 
 ## Usage
 gearVRC.py has the following options
@@ -43,6 +45,11 @@ gearVRC.py has the following options
                         serial baud rate, e.g. 115200
   -z <zmqport>, --zmq <zmqport>
                         port used by ZMQ, e.g. 5556
+  -e <escreps>, --escreps <escreps>
+						number of consecutive home button presses to terminate program
+						e.g. 3
+  -t <esctimeoput>, --esctimeout <esctimeout>
+						timeout for counting the home button presses in seconds, e.g. 2.0
 ```
 - ```-n``` by default is ```Gear VR Controller(17DB)```
 - ```-a``` vy default is ```2C:BA:BA:2E:17:DB```
