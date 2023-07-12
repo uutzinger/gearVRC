@@ -49,7 +49,7 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 
 from pyIMU.madgwick import Madgwick
 from pyIMU.quaternion import Vector3D, Quaternion
-from pyIMU.utilities import q2rpy, qmag2h
+from pyIMU.utilities import q2rpy, rpymag2h
 
 import zmq
 import zmq.asyncio
@@ -73,11 +73,12 @@ DEVICE_MAC  = '2C:BA:BA:2E:17:DB'
 
 # LOCATION
 ################################################################
-DECLINATION  = 9.27 * DEG2RAD      # Declination at your location
-LATITUDE     = 32.253460 *DEG2RAD  # Tucson
+DECLINATION  = 8.124973426113137 * DEG2RAD      # Declination at your location
+LATITUDE     = 32.253460           # [degrees] Tucson
+LONGITUDE    = -110.911789         # [degrees] Tucson
 ALTITUDE     = 730                 # [m], Tucson
-MAGFIELD     = 47392               # [nano Tesla] Tucson
-MAGFIELD_MAX = 1.2 *MAGFIELD/1000. # micro Tesla
+MAGFIELD     = 33078.93064435485   # [nano Tesla] Tucson
+MAGFIELD_MAX = 1.2*MAGFIELD/1000.  # micro Tesla
 MAGFIELD_MIN = 0.8*MAGFIELD/1000.  # micro Tesla
 
 # Program Timing:
@@ -662,6 +663,9 @@ class gearVRC:
         self.acc_cal       = Vector3D(0.,0.,0.)
         self.gyr_cal       = Vector3D(0.,0.,0.)
         self.mag_cal       = Vector3D(0.,0.,0.)
+
+        self.moving        = True
+        self.magok         = False
             
 
     def handle_disconnect(self,client):
@@ -1120,8 +1124,8 @@ class gearVRC:
 
         self.gyr_average = 0.99*self.gyr_average + 0.01*self.gyr
         self.acc_average = 0.99*self.acc_average + 0.01*self.acc
-        moving = detectMotion(self.acc.norm, self.gyr.norm, self.acc_average.norm, self.gyr_average.norm)
-        if not moving:
+        self.moving = detectMotion(self.acc.norm, self.gyr.norm, self.acc_average.norm, self.gyr_average.norm)
+        if not self.moving:
             self.gyr_offset = 0.99*self.gyr_offset + 0.01*self.gyr
             self.gyr_offset_updated = True
 
@@ -1260,18 +1264,22 @@ class gearVRC:
             if (self.mag_cal.norm >  MAGFIELD_MAX) or (self.mag_cal.norm < MAGFIELD_MIN):
                 # Mag is not in acceptable range
                 self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=None,dt=-1)
+                self.magok = False
             else:
                 self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=self.mag_cal,dt=-1)
+                self.magok = True
 
         else:
             if (self.mag_cal.norm >  MAGFIELD_MAX) or (self.mag_cal.norm < MAGFIELD_MIN):
                 # Mag not in acceptable range
                 self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=None,dt=dt)
+                self.magok = False
             else:
                 self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=self.mag_cal,dt=dt)
+                self.magok = True
 
-        self.heading=qmag2h(q=self.q, mag=self.mag_cal, declination=DECLINATION)
         self.rpy=q2rpy(q=self.q)
+        self.heading = rpymag2h(rpy=self.rpy, mag=self.mag_cal, declination=DECLINATION)
         
         
     def check_ESC_sequence(self):
@@ -1772,6 +1780,7 @@ class gearVRC:
                 msg_out+= 'Accel avg {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.acc_average.x, self.acc_average.y, self.acc_average.z, self.acc_average.norm)
                 msg_out+= 'Gyro  avg {:>8.3f} {:>8.3f} {:>8.3f} RPM:{:>8.3f}\n'.format(self.gyr_average.x, self.gyr_average.y, self.gyr_average.z, self.gyr_average.norm*60./TWOPI)
                 msg_out+= 'Gyro bias {:>8.3f} {:>8.3f} {:>8.3f} RPM:{:>8.3f}\n'.format(self.gyr_offset.x, self.gyr_offset.y, self.gyr_offset.z, self.gyr_offset.norm*60./TWOPI)
+                msg_out+= 'Moving:   {}\n'.format('Y' if self.moving else 'N')
 
                 msg_out+= '-------------------------------------------------\n'
 
@@ -1817,6 +1826,9 @@ class gearVRC:
                                                     self.heading*RAD2DEG)
                     msg_out+= 'Q:     W{:>6.3f} X{:>6.3f} Y{:>6.3f} Z{:>6.3f}\n'.format(
                                                     self.q.w, self.q.x, self.q.y, self.q.z)
+                    
+                    msg_out+= 'Using Mag in AHRS: {}\n'.format('Y' if self.magok else 'N')
+
 
  
             print(msg_out, flush=True)
