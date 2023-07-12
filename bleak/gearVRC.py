@@ -1398,7 +1398,7 @@ class gearVRC:
             ###############################################################
             if self.args.virtual:
                 # We throttle the update rate of the virtual features
-                if startTime - self.previous_virtualUpdate > VIRTUALUPDATEINTERVAL:
+                if startTime - self.previous_virtualUpdate >= self.virtual_updateInterval:
                     self.previous_virtualUpdate = copy(startTime)
                     #
                     start_virtualUpdate = time.perf_counter()
