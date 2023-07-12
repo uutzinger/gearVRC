@@ -49,7 +49,7 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 
 from pyIMU.madgwick import Madgwick
 from pyIMU.quaternion import Vector3D, Quaternion
-from pyIMU.utilities import q2rpy, rpymag2h
+from pyIMU.utilities import q2rpy, rpymag2h, qmag2h
 
 import zmq
 import zmq.asyncio
@@ -1456,6 +1456,8 @@ class gearVRC:
 
         self.battery_level = int.from_bytes(data,'big')
 
+    # FOLLOWING TASKS HAVE BEEN MOVED TO handle_data
+    ################################################
     # async def update_EscSequence(self, counts=3, timeout=1.0):
     #     '''
     #     Check if home button is pressed three times in a row within timeout seconds
