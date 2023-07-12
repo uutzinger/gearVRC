@@ -49,7 +49,7 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 
 from pyIMU.madgwick import Madgwick
 from pyIMU.quaternion import Vector3D, Quaternion
-from pyIMU.utilities import q2rpy, heading
+from pyIMU.utilities import q2rpy, qmag2h
 
 import zmq
 import zmq.asyncio
@@ -1270,7 +1270,7 @@ class gearVRC:
             else:
                 self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=self.mag_cal,dt=dt)
 
-        self.heading=heading(q=self.q, mag=self.mag_cal, declination=DECLINATION)
+        self.heading=qmag2h(q=self.q, mag=self.mag_cal, declination=DECLINATION)
         self.rpy=q2rpy(q=self.q)
         
         
@@ -2241,12 +2241,12 @@ if __name__ == '__main__':
     )
 
     parser.add_argument(
-        '-r',
-        '--reps',
+        '-e',
+        '--escreps',
         dest = 'escreps',
         type = int,
         metavar='<escreps>',
-        help='number of consecutive HOME presses',
+        help='number of consecutive HOME presses to terminate program',
         default = 3
     )
 
@@ -2256,7 +2256,7 @@ if __name__ == '__main__':
         dest = 'esctimeout',
         type = float,
         metavar='<esctimeout>',
-        help='interval for consecutive HOME presses in seconds',
+        help='interval for consecutive HOME presses in seconds to terminate program',
         default = 2.
     )
 
