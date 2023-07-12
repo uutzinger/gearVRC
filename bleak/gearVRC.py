@@ -1267,7 +1267,7 @@ class gearVRC:
         # Decode the data
         
         if (len(data) >= 60):
-            decode_data(data)
+            self.decode_data(data)
             self.dataAvailable.set()
             # await asyncio.sleep(0)  # yield to other tasks
         else:
@@ -1295,7 +1295,8 @@ class gearVRC:
         startTime = time.perf_counter()
 
         self.runTime = startTime - self.startTime
-        WHA
+        
+        ###################WHA
 
         # Update rate
         self.data_updateCounts += 1
@@ -1315,7 +1316,7 @@ class gearVRC:
 
         # Decode the data        
         if (len(data) >= 60):
-            decode_data(data)
+            self.decode_data(data)
             self.dataAvailable.set()
             # await asyncio.sleep(0)  # yield to other tasks
         else:
@@ -1464,7 +1465,7 @@ class gearVRC:
             await self.dataAvailable.wait()
             self.dataAvailable.clear()
 
-            if check_ESC_sequence(counts=counts, timeout=timeout):
+            if self.check_ESC_sequence(counts=counts, timeout=timeout):
                 self.logger.log(logging.INFO, 'ESC detected')
                 self.terminate.set()
             
@@ -1521,7 +1522,7 @@ class gearVRC:
 
             # ESC sequence
             ###############################################################
-            if check_ESC_sequence(counts=counts, timeout=timeout):
+            if self.check_ESC_sequence(counts=counts, timeout=timeout):
                 self.logger.log(logging.INFO, 'ESC detected')
                 self.terminate.set()
                     
@@ -1541,7 +1542,7 @@ class gearVRC:
                         self.virtual_lastTimeRate = copy(startTime)
                         self.virtual_updateCounts = 0
                     #
-                    compute_virtual()
+                    self.compute_virtual()
                     self.logger.log(logging.DEBUG, 'Wheel Position: {}'.format(self.wheelPos))
                     self.logger.log(logging.DEBUG, 'Delta Wheel Position: {}'.format(self.delta_wheelPos))
                     self.logger.log(logging.DEBUG, 'Virtual Touch Position: {},{}'.format(self.absX,self.absY))
@@ -1561,7 +1562,7 @@ class gearVRC:
                     self.fusion_lastTimeRate = copy(startTime)
                     self.fusion_updateCounts = 0
                 #
-                compute_fusion()
+                self.compute_fusion()
                 self.fusion_deltaTime = time.perf_counter() - start_fusionUpdate
 
             self.processedDataAvailable.set()
@@ -1627,7 +1628,7 @@ class gearVRC:
 
             # Where are we touching the pad?
             # Wheel and extended touchpad
-            compute_virtual()
+            self.compute_virtual()
             self.logger.log(logging.DEBUG, 'Wheel Position: {}'.format(self.wheelPos))
             self.logger.log(logging.DEBUG, 'Delta Wheel Position: {}'.format(self.delta_wheelPos))
             self.logger.log(logging.DEBUG, 'Virtual Touch Position: {},{}'.format(self.absX,self.absY))
@@ -1669,7 +1670,7 @@ class gearVRC:
                 self.fusion_lastTimeRate = copy(startTime)
                 self.fusion_updateCounts = 0
 
-            compute_fusion()
+            self.compute_fusion()
 
             # update interval
             self.fusion_deltaTime = time.perf_counter() - startTime
