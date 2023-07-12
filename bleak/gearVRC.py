@@ -502,6 +502,11 @@ class gearVRC:
         self.volume_down            = False # Volume down button pressed
         self.noButton               = True  # No button was pressed (mutually exclusive with the above)
 
+        # ESC sequence
+        self.previous_home          = False
+        self.home_updateCounts      = 0
+        self.home_pressedTime       = time.perf_counter()
+
         # Virtual wheel
         self.wheelPos               = 0     # Wheel position 0..63
         self.previous_wheelPos      = 0
@@ -516,6 +521,8 @@ class gearVRC:
 
         # Scrolling
         # Touch pad
+        self.previous_touchX        = 0     # touch pad X
+        self.previous_touchY        = 0     # touch pad Y
         self.absX                   = 0     # Position on virtual touchpad (scrolling)
         self.absY                   = 0     #
         self.dirUp                  = False # Touching pad and moving upwards
@@ -523,10 +530,6 @@ class gearVRC:
         self.dirLeft                = False # Touching pad and moving to the left
         self.dirRight               = False # Touching pad and moving to the right
                         
-        self.previous_touchX        = 0  # touch pad X
-        self.previous_touchY        = 0  # touch pad Y
-
-
         # Timing
         ###################
         self.startTime              = 0.
@@ -539,18 +542,28 @@ class gearVRC:
 
         self.virtual_deltaTime      = 0.
         self.virtual_rate           = 0
-        self.virtual_updateInterval= VIRTUALUPDATEINTERVAL
+        self.virtual_updateInterval = VIRTUALUPDATEINTERVAL
+        self.virtual_updateCounts   = 0
+        self.virtual_lastTimeRate   = time.perf_counter()
+        self.previous_virtualUpdate = time.perf_counter()
 
         self.fusion_deltaTime       = 0.
         self.fusion_rate            = 0
+        self.fusion_updateCounts    = 0
+        self.fusion_lastTimeRate    = time.perf_counter()
+        self.previous_fusionTime    = time.perf_counter()
 
         self.report_deltaTime       = 0.
         self.report_rate            = 0
-        self.report_updateInterval = REPORTINTERVAL
+        self.report_updateInterval  = REPORTINTERVAL
+        self.report_updateCounts    = 0
+        self.report_lastTimeRate    = time.perf_counter()
 
         self.serial_deltaTime       = 0.
         self.serial_rate            = 0
-
+        self.serial_deltaTime       = 0.
+        self.serial_updateCounts    = 0
+        
         self.zmq_deltaTime          = 0.
         self.zmq_rate               = 0
 
@@ -617,6 +630,13 @@ class gearVRC:
         self.q             = Quaternion(1.,0.,0.,0.)
         self.heading       = 0.
         self.rpy           = Vector3D(0.,0.,0.)
+
+        self.acc_cal       = Vector3D(0.,0.,0.)
+        self.gyr_cal       = Vector3D(0.,0.,0.)
+        self.mag_cal       = Vector3D(0.,0.,0.)
+        
+        self.previous_fusionTime = time.perf_counter()
+        
 
     def handle_disconnect(self,client):
         self.logger.log(logging.INFO,'Client disconnected, Signaling...')
@@ -928,6 +948,293 @@ class gearVRC:
         else:
             self.logger.log(logging.ERROR, 'No Client available for {}, can not unscubscribe'.format(self.device_name))
 
+    def decode_data(self, data: bytearray):
+        # Decode the values
+        ###################
+        
+        # Time:
+        #  There are three time stamps, one is general and one is for touch pad
+        #   Not sure which belongs to which: 
+        #   accelerometer is usually read faster than magnetometer, 
+        #   gyroscope and accelerometer are usually on the same chip
+        #   assuming earliest time stamp is the IMU time stamp
+        self.sensorTime = (struct.unpack('<I', data[0:4])[0]   & 0xFFFFFFFF) /1000000.
+        # self.aTime      = (struct.unpack('<I', data[16:20])[0] & 0xFFFFFFFF) /1000000.
+        # self.bTime      = (struct.unpack('<I', data[32:36])[0] & 0xFFFFFFFF) /1000000.
+
+        self.delta_sensorTime     = self.sensorTime - self.previous_sensorTime
+        # self.delta_aTime          = self.aTime      - self.previous_aTime
+        # self.delta_bTime          = self.bTime      - self.previous_bTime
+        self.previous_sensorTime = copy(self.sensorTime)
+        # self.previous_aTime      = copy(self.aTime)
+        # self.previous_bTime      = copy(self.bTime)
+
+        # Temperature:
+        self.temperature = data[57]
+
+        # Buttons
+        self.trigger     = True if ((data[58] &  1) ==  1) else False
+        self.home        = True if ((data[58] &  2) ==  2) else False
+        self.back        = True if ((data[58] &  4) ==  4) else False
+        self.touch       = True if ((data[58] &  8) ==  8) else False
+        self.volume_up   = True if ((data[58] & 16) == 16) else False
+        self.volume_down = True if ((data[58] & 32) == 32) else False
+        self.noButton    = True if ((data[58] & 64) == 64) else False
+
+        # Touch pad:
+        #  Max observed value = 315
+        #  Location 0/0 is not touched
+        #  Bottom right is largest number
+        #  Y axis is up-down
+        #  X axis is left-right 
+        self.touchX     = ((data[54] & 0xF) << 6) + ((data[55] & 0xFC) >> 2) & 0x3FF
+        self.touchY     = ((data[55] & 0x3) << 8) + ((data[56] & 0xFF) >> 0) & 0x3FF
+
+        # IMU:
+        #  Accelerometer, Gyroscope, Magnetometer
+        #  Magnetometer often has large hard iron offset
+        #
+        self.accX = struct.unpack('<h', data[4:6])[0]   * 0.00478840332  # 10000.0 * 9.80665 / 2048 / 10000.0       # m**2/s
+        self.accY = struct.unpack('<h', data[6:8])[0]   * 0.00478840332  #
+        self.accZ = struct.unpack('<h', data[8:10])[0]  * 0.00478840332  #
+        self.gyrX = struct.unpack('<h', data[10:12])[0] * 0.001221791529 # 10000.0 * 0.017453292 / 14.285 / 1000.0 / 10. # rad/s
+        self.gyrY = struct.unpack('<h', data[12:14])[0] * 0.001221791529 #
+        self.gyrZ = struct.unpack('<h', data[14:16])[0] * 0.001221791529 #
+        self.magY = struct.unpack('<h', data[48:50])[0] * 0.06           # micro Tesla, earth mag field 25..65 muTesla
+        self.magX = struct.unpack('<h', data[50:52])[0] * 0.06           #
+        self.magZ = struct.unpack('<h', data[52:54])[0] * 0.06           #
+
+        # Rearrange the Axes
+        #
+        # It was found for gearVRC when holding device and pointing forward:
+        #
+        # acc.x points to the left/west
+        # acc.y points towards user
+        # acc.z points downwards
+        # -Y-X+Z (this coordinate system is non standard)
+        #
+        # mag.x points to the user
+        # mag.y points to the right/left
+        # mag.z points downwards
+        # -X+Y+Z
+        #
+        # gyr.x is counter clockwise around x
+        # gyr.y is counter clockwise around y
+        # gyr.z is counter clockwise around z
+        # +Y+X-Z
+        # 
+        # We want x to point North y to East and z to Down Orientation,
+        # We also want rotation to be clockwise around axis:
+        #   acc.x pointing forward      -acc.y
+        #   acc.y pointing to the right -acc.x
+        #   acc.z pointing downwards     acc.z
+        #   mag.x pointing forward      -mag.y
+        #   mag.y pointing to the right  mag.x
+        #   mag.z pointing down          mag.z
+        #   gyr.x clock wise forward     gyr.y
+        #   gyr.y clockwise to the right gyr.x
+        #   gyr.z clockwise downwards   -gyr.z
+
+        # acc -Y-X+Z
+        # gyr +Y+X-Z        
+        # mag -X+Y+Z
+
+        self.acc = Vector3D(-self.accY, -self.accX,  self.accZ)
+        self.gyr = Vector3D( self.gyrY,  self.gyrX, -self.gyrZ)
+        self.mag = Vector3D(-self.magX,  self.magY,  self.magZ)
+
+        self.gyr_average = 0.99*self.gyr_average + 0.01*self.gyr
+        self.acc_average = 0.99*self.acc_average + 0.01*self.acc
+        moving = detectMotion(self.acc.norm, self.gyr.norm, self.acc_average.norm, self.gyr_average.norm)
+
+        if not moving:
+            self.gyr_offset = 0.99*self.gyr_offset + 0.01*self.gyr
+            self.gyr_offset_updated = True
+
+    def compute_virtual(self):
+        '''
+        Compute virtual wheel and virtual touchpad
+        '''        
+        if not (self.touchX == 0 and self.touchY==0): 
+
+            # Virtual Wheel
+            #  Detects if rim of touchpad is touched and where 0..63
+            #  Detects finger moves along wheel (rotation clockwise or counter clockwise)
+            #  Detects if rim touched on top, left, right, bottom
+
+            x = self.touchX - WHEELRADIUS # horizontal distance from center of touchpad
+            y = self.touchY - WHEELRADIUS # vertical distance from center
+            l2 = x*x + y*y                # distance from center (squared)
+            if l2 > RTHRESH2:             # Wheel is touched
+                self.center = False
+                phi = (math.atan2(y,x) + TWOPI) % TWOPI # angle 0 .. 2*pi from pointing to the right counter clockwise
+                self.wheelPos = int(math.floor(phi / TWOPI * NUMWHEELPOS))
+                # Top, Bottom, Left, Right
+                if self.wheelPos > NUMWHEELPOS1_8:
+                    if self.wheelPos < NUMWHEELPOS3_8:
+                        self.top    = False
+                        self.left   = False
+                        self.bottom = True
+                        self.right  = False
+                    elif self.wheelPos < NUMWHEELPOS5_8:
+                        self.top    = False
+                        self.left   = True
+                        self.bottom = False
+                        self.right  = False
+                    elif self.wheelPos < NUMWHEELPOS7_8:
+                        self.top    = True
+                        self.left   = False
+                        self.bottom = False
+                        self.right  = False
+                    else: 
+                        self.top    = False
+                        self.left   = False
+                        self.bottom = False
+                        self.right  = True
+
+                self.delta_wheelPos = self.wheelPos - self.previous_wheelPos
+                self.previous_wheelPos   = copy(self.wheelPos)
+                # deal with discontinuity at 360/0:
+                #   general formula with intervals along a circle in degrees is
+                #   d_a = d_a - (360. * np.floor((d_a + 180.)/360.))
+                #   resulting in d_a between < 180 and >=-180
+                self.delta_wheelPos -= int(MAXWHEELPOS * np.floor((self.delta_wheelPos + MAXWHEELPOS2)/MAXWHEELPOS))
+                if (self.delta_wheelPos > 0):
+                    # rotating clock wise
+                    self.isRotating = True
+                    self.clockwise  = True
+                elif (self.delta_wheelPos < 0):
+                    # rotating counter clock wise
+                    self.isRotating = True
+                    self.clockwise  = False
+                else:
+                    self.isRotating = False
+
+            else: # wheel not touched, but touchpad is touched
+            
+                # Virtual Pad
+                #  Detects scrolling of touchpad to create absolute 'mouse' position, allowing to reach larger field than touchpad allone        
+                self.isRotating = False
+                self.top        = False
+                self.left       = False
+                self.bottom     = False
+                self.right      = False
+                self.center     = True
+
+            # Movement direction on touchpad
+            # This assesses scrolling
+            self.deltaX = self.touchX - self.previous_touchX
+            self.deltaY = self.touchY - self.previous_touchY
+            self.previous_touchX = copy(self.touchX)
+            self.previous_touchY = copy(self.touchY)
+            if (abs(self.deltaX) < 50) and (abs(self.deltaY) < 50): # disregard large jumps such as when lifting finger between scrolling
+                self.absX += self.deltaX 
+                self.absY += self.deltaY 
+                self.absX  = clamp(self.absX, MINXTOUCH, MAXXTOUCH)
+                self.absY  = clamp(self.absY, MINYTOUCH, MAXYTOUCH)
+                # Left or Right?
+                if (self.deltaX > 0):
+                    self.dirRight = True
+                    self.dirLeft  = False
+                elif (self.deltaX < 0):
+                    self.dirLeft  = True
+                    self.dirRight = False
+                else:
+                    self.dirLeft  = False
+                    self.dirRight = False
+                # Up or Down?
+                if (self.deltaY > 0):
+                    self.dirDown  = True
+                    self.dirUp    = False
+                elif (self.deltaY < 0):
+                    self.dirUp    = True
+                    self.dirDown = False
+                else:
+                    self.dirUp    = False
+                    self.dirDown  = False
+            
+        else: # Touch pad was not touched
+            self.center   = False
+            self.top      = False
+            self.left     = False
+            self.bottom   = False
+            self.right    = False
+            self.dirUp    = False
+            self.dirDown  = False
+            self.dirLeft  = False
+            self.dirRight = False
+
+    def compute_fusion(self):
+        '''
+        Update AHRS and compute heading and roll/pitch/yaw
+        '''
+
+        # Fusion data interval, is computed from sensor provided time stamp
+        dt = self.sensorTime - self.previous_fusionTime # time interval between sensor data
+        self.previous_fusionTime = copy(self.sensorTime) # keep track of last sensor time
+
+        # Calibrate IMU Data
+        self.acc_cal = calibrate(data=self.acc, offset=self.acc_offset, crosscorr=self.acc_crosscorr)
+        self.mag_cal = calibrate(data=self.mag, offset=self.mag_offset, crosscorr=self.mag_crosscorr)
+        self.gyr_cal = calibrate(data=self.gyr, offset=self.gyr_offset, crosscorr=self.gyr_crosscorr)
+
+        if dt > 1.0: 
+            # First run or reconnection, need AHRS algorythem to initialize
+            if (self.mag_cal.norm >  MAGFIELD_MAX) or (self.mag_cal.norm < MAGFIELD_MIN):
+                # Mag is not in acceptable range
+                self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=None,dt=-1)
+            else:
+                self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=self.mag_cal,dt=-1)
+
+        else:
+            if (self.mag_cal.norm >  MAGFIELD_MAX) or (self.mag_cal.norm < MAGFIELD_MIN):
+                # Mag not in acceptable range
+                self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=None,dt=dt)
+            else:
+                self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=self.mag_cal,dt=dt)
+
+        self.heading=heading(q=self.q, mag=self.mag_cal, declination=DECLINATION)
+        self.rpy=q2rpy(q=self.q)
+        
+        
+    def check_ESC_sequence(self, counts=3, timeout=3.):
+        '''
+        Was the home button pressed counts times within timeout seconds?
+
+        self.home
+        self.previous_home
+        self.home_updateCounts
+        self.home_pressedTime
+        '''
+        if self.home == True:
+            if not self.previous_home:
+                # Home button pressed
+                elapsed = time.perf_counter() - self.home_pressedTime
+                self.home_updateCounts += 1
+                self.previous_home = True
+                
+                if self.home_updateCounts == 1:
+                    self.home_pressedTime = time.perf_counter()
+
+                if (self.home_updateCounts == 2) and (elapsed > timeout):
+                    self.home_updateCounts = 1
+                    self.home_pressedTime = time.perf_counter()
+
+                elif self.home_updateCounts == counts:
+                    if elapsed <= timeout:
+                        return True
+                    else:
+                        # To slow, ESC not detected, reset
+                        self.home_updateCounts = 0
+            else: 
+                # it remains pressed
+                pass
+        else:
+            # its not pressed
+            self.previous_home = False
+            
+        return False
+
     async def handle_sensorData(self, characteristic: BleakGATTCharacteristic, data: bytearray):
         '''
         Decode the sensor data
@@ -951,124 +1258,152 @@ class gearVRC:
             self.data_lastTimeRate = copy(startTime)
             self.data_updateCounts = 0
 
-        # VRMode does not seems to work and resutls in receiving only 2 data values instead of 60
+        # VRMode does not seems to work and results in receiving only 2 data values instead of 60
         # Other example attempt switching to VRMode after some runtime but his does not work:
         # if self.VRMode and not self.HighResMode:
         #     if self.runTime > 5.0:
         #         await self.start_sensor(VRMode=True)        
 
-        # Should receive 60 values
+        # Decode the data
+        
         if (len(data) >= 60):
-            # Decode the values
-            ###################
-            
-            # Time:
-            #  There are three time stamps, one is general and one is for touch pad
-            #   Not sure which belongs to which: 
-            #   accelerometer is usually read faster than magnetometer, 
-            #   gyroscope and accelerometer are usually on the same chip
-            #   assuming earliest time stamp is the IMU time stamp
-            self.sensorTime = (struct.unpack('<I', data[0:4])[0]   & 0xFFFFFFFF) /1000000.
-            # self.aTime      = (struct.unpack('<I', data[16:20])[0] & 0xFFFFFFFF) /1000000.
-            # self.bTime      = (struct.unpack('<I', data[32:36])[0] & 0xFFFFFFFF) /1000000.
-
-            self.delta_sensorTime     = self.sensorTime - self.previous_sensorTime
-            # self.delta_aTime          = self.aTime      - self.previous_aTime
-            # self.delta_bTime          = self.bTime      - self.previous_bTime
-            self.previous_sensorTime = copy(self.sensorTime)
-            # self.previous_aTime      = copy(self.aTime)
-            # self.previous_bTime      = copy(self.bTime)
-
-            # Temperature:
-            self.temperature = data[57]
-
-            # Buttons
-            self.trigger     = True if ((data[58] &  1) ==  1) else False
-            self.home        = True if ((data[58] &  2) ==  2) else False
-            self.back        = True if ((data[58] &  4) ==  4) else False
-            self.touch       = True if ((data[58] &  8) ==  8) else False
-            self.volume_up   = True if ((data[58] & 16) == 16) else False
-            self.volume_down = True if ((data[58] & 32) == 32) else False
-            self.noButton    = True if ((data[58] & 64) == 64) else False
-
-            # Touch pad:
-            #  Max observed value = 315
-            #  Location 0/0 is not touched
-            #  Bottom right is largest number
-            #  Y axis is up-down
-            #  X axis is left-right 
-            self.touchX     = ((data[54] & 0xF) << 6) + ((data[55] & 0xFC) >> 2) & 0x3FF
-            self.touchY     = ((data[55] & 0x3) << 8) + ((data[56] & 0xFF) >> 0) & 0x3FF
-
-            # IMU:
-            #  Accelerometer, Gyroscope, Magnetometer
-            #  Magnetometer often has large hard iron offset
-            #
-            self.accX = struct.unpack('<h', data[4:6])[0]   * 0.00478840332  # 10000.0 * 9.80665 / 2048 / 10000.0       # m**2/s
-            self.accY = struct.unpack('<h', data[6:8])[0]   * 0.00478840332  #
-            self.accZ = struct.unpack('<h', data[8:10])[0]  * 0.00478840332  #
-            self.gyrX = struct.unpack('<h', data[10:12])[0] * 0.001221791529 # 10000.0 * 0.017453292 / 14.285 / 1000.0 / 10. # rad/s
-            self.gyrY = struct.unpack('<h', data[12:14])[0] * 0.001221791529 #
-            self.gyrZ = struct.unpack('<h', data[14:16])[0] * 0.001221791529 #
-            self.magY = struct.unpack('<h', data[48:50])[0] * 0.06           # micro Tesla, earth mag field 25..65 muTesla
-            self.magX = struct.unpack('<h', data[50:52])[0] * 0.06           #
-            self.magZ = struct.unpack('<h', data[52:54])[0] * 0.06           #
-
-            # Rearrange the Axes
-            #
-            # It was found for gearVRC when holding device and pointing forward:
-            #
-            # acc.x points to the left/west
-            # acc.y points towards user
-            # acc.z points downwards
-            # -Y-X+Z (this coordinate system is non standard)
-            #
-            # mag.x points to the user
-            # mag.y points to the right/left
-            # mag.z points downwards
-            # -X+Y+Z
-            #
-            # gyr.x is counter clockwise around x
-            # gyr.y is counter clockwise around y
-            # gyr.z is counter clockwise around z
-            # +Y+X-Z
-            # 
-            # We want x to point North y to East and z to Down Orientation,
-            # We also want rotation to be clockwise around axis:
-            #   acc.x pointing forward      -acc.y
-            #   acc.y pointing to the right -acc.x
-            #   acc.z pointing downwards     acc.z
-            #   mag.x pointing forward      -mag.y
-            #   mag.y pointing to the right  mag.x
-            #   mag.z pointing down          mag.z
-            #   gyr.x clock wise forward     gyr.y
-            #   gyr.y clockwise to the right gyr.x
-            #   gyr.z clockwise downwards   -gyr.z
-
-            # acc -Y-X+Z
-            # gyr +Y+X-Z        
-            # mag -X+Y+Z
-
-            self.acc = Vector3D(-self.accY, -self.accX,  self.accZ)
-            self.gyr = Vector3D( self.gyrY,  self.gyrX, -self.gyrZ)
-            self.mag = Vector3D(-self.magX,  self.magY,  self.magZ)
-
-            self.gyr_average = 0.99*self.gyr_average + 0.01*self.gyr
-            self.acc_average = 0.99*self.acc_average + 0.01*self.acc
-            moving = detectMotion(self.acc.norm, self.gyr.norm, self.acc_average.norm, self.gyr_average.norm)
-
-            if not moving:
-                self.gyr_offset = 0.99*self.gyr_offset + 0.01*self.gyr
-                self.gyr_offset_updated = True
-
+            decode_data(data)
             self.dataAvailable.set()
-
             # await asyncio.sleep(0)  # yield to other tasks
-
         else:
             self.logger.log(logging.INFO, 'Not enough values: {}'.format(len(data)))
             # switch to sensor mode
             await self.start_sensor(VRMode = False)
+
+    async def handle_data(self, characteristic: BleakGATTCharacteristic, data: bytearray, args, counts=3, timeout=3.):
+        '''
+        Decode the sensor data
+            Compared to this Gear VRC reverse engineering (Java): https://github.com/jsyang/gearvr-controller-webbluetooth
+            this code includes the 3 different time stamps as well as correct magnetometer data
+        ESC sequence
+          Check if home button is pressed three times in a row within timeout seconds
+        fusion
+          Fuse IMU data to pose, roll, pitch, yaw, and heading
+        virtual    
+          Create Virtual Wheel
+          Create Extended Touchpad
+          Inspired from https://github.com/rdady/gear-vr-controller-linux
+          This routine can be throttled to lower update rate
+        '''
+
+
+        startTime = time.perf_counter()
+
+        self.runTime = startTime - self.startTime
+        WHA
+
+        # Update rate
+        self.data_updateCounts += 1
+        self.data_deltaTime = startTime - self.data_lastTime
+        self.data_lastTime = time.perf_counter()
+
+        if startTime - self.data_lastTimeRate >= 1:
+            self.data_rate = copy(self.data_updateCounts)
+            self.data_lastTimeRate = copy(startTime)
+            self.data_updateCounts = 0
+
+        # VRMode does not seems to work and results in receiving only 2 data values instead of 60
+        # Other example attempt switching to VRMode after some runtime but his does not work:
+        # if self.VRMode and not self.HighResMode:
+        #     if self.runTime > 5.0:
+        #         await self.start_sensor(VRMode=True)        
+
+        # Decode the data        
+        if (len(data) >= 60):
+            decode_data(data)
+            self.dataAvailable.set()
+            # await asyncio.sleep(0)  # yield to other tasks
+        else:
+            self.logger.log(logging.INFO, 'Not enough values: {}'.format(len(data)))
+            # switch to sensor mode
+            await self.start_sensor(VRMode = False)
+
+
+        # ESC sequence
+        ###############################################################
+        if check_ESC_sequence(counts=counts, timeout=timeout):
+            self.logger.log(logging.INFO, 'ESC detected')
+            self.terminate.set()
+
+        # Virtual
+        ###############################################################
+
+        if args.virtual:
+            
+            # We can throttle the update rate of the virtual features
+            if startTime - self.previous_virtualUpdate > VIRTUALUPDATEINTERVAL:
+                self.previous_virtualUpdate = copy(startTime)
+
+                start_virtualUpdate = time.perf_counter()
+                
+                self.virtual_updateCounts += 1
+                if (startTime - self.virtual_lastTimeRate)>= 1.:
+                    self.virtual_rate = copy(self.virtual_updateCounts)
+                    self.virtual_lastTimeRate = copy(startTime)
+                    self.virtual_updateCounts = 0
+
+                # Where are we touching the pad?
+                # Wheel and extended touchpad
+                compute_virtual()
+                self.logger.log(logging.DEBUG, 'Wheel Position: {}'.format(self.wheelPos))
+                self.logger.log(logging.DEBUG, 'Delta Wheel Position: {}'.format(self.delta_wheelPos))
+                self.logger.log(logging.DEBUG, 'Virtual Touch Position: {},{}'.format(self.absX,self.absY))
+
+                self.virtual_deltaTime = time.perf_counter() - start_virtualUpdate
+
+            # Fusion
+            ###############################################################
+
+            if args.fusion:
+
+                # update interval
+                start_fusionUpdate = time.perf_counter()
+
+                # fps
+                self.fusion_updateCounts += 1
+                if (startTime - self.fusion_lastTimeRate)>= 1.:
+                    self.fusion_rate = copy(self.fusion_updateCounts)
+                    self.fusion_lastTimeRate = copy(startTime)
+                    self.fusion_updateCounts = 0
+
+                # Fusion data interval, is computed from sensor provided time stamp
+                dt = self.sensorTime - self.previous_fusionTime # time interval between sensor data
+                self.previous_fusionTime = copy(self.sensorTime) # keep track of last sensor time
+
+                # Calibrate IMU Data
+                self.acc_cal = calibrate(data=self.acc, offset=self.acc_offset, crosscorr=self.acc_crosscorr)
+                self.mag_cal = calibrate(data=self.mag, offset=self.mag_offset, crosscorr=self.mag_crosscorr)
+                self.gyr_cal = calibrate(data=self.gyr, offset=self.gyr_offset, crosscorr=self.gyr_crosscorr)
+
+                if dt > 1.0: 
+                    # First run or reconnection, need AHRS algorythem to initialize
+                    if (self.mag_cal.norm >  MAGFIELD_MAX) or (self.mag_cal.norm < MAGFIELD_MIN):
+                        # Mag is not in acceptable range
+                        self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=None,dt=-1)
+                    else:
+                        self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=self.mag_cal,dt=-1)
+
+                else:
+                    if (self.mag_cal.norm >  MAGFIELD_MAX) or (self.mag_cal.norm < MAGFIELD_MIN):
+                        # Mag not in acceptable range
+                        self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=None,dt=dt)
+                    else:
+                        self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=self.mag_cal,dt=dt)
+
+                self.heading=heading(q=self.q, mag=self.mag_cal, declination=DECLINATION)
+                self.rpy=q2rpy(q=self.q)
+
+                self.fusion_deltaTime = time.perf_counter() - start_fusionUpdate
+
+            self.processedDataAvailable.set()
+            await asyncio.sleep(0) # allow other tasks to run
+
+        self.logger.log(logging.INFO, 'Data processing stopped')
 
     def handle_batteryData(self, characteristic: BleakGATTCharacteristic, data: bytearray):
         
@@ -1118,9 +1453,9 @@ class gearVRC:
         self.logger.log(logging.INFO, 'Starting ESC Detection Task...')
 
         # Keep track of home button presses
-        previous_home = False
-        home_updateCounts = 0
-        home_pressedTime = time.perf_counter()
+        self.previous_home = False
+        self.home_updateCounts = 0
+        self.home_pressedTime = time.perf_counter()
 
         while not self.finish_up:
 
@@ -1129,34 +1464,9 @@ class gearVRC:
             await self.dataAvailable.wait()
             self.dataAvailable.clear()
 
-            if self.home == True:
-                if not previous_home:
-                    # Home button pressed
-                    elapsed = time.perf_counter() - home_pressedTime
-                    home_updateCounts += 1
-                    previous_home = True
-                    
-                    if home_updateCounts == 1:
-                        home_pressedTime = time.perf_counter()
-
-                    if (home_updateCounts == 2) and (elapsed > timeout):
-                        home_updateCounts = 1
-                        home_pressedTime = time.perf_counter()
- 
-                    elif home_updateCounts == counts:
-                        if elapsed <= timeout:
-                            # ESC sequence detected, signal finish
-                            self.logger.log(logging.INFO, 'ESC detected')
-                            self.terminate.set()
-                        else:
-                            # To slow, ESC not detected, reset
-                            home_updateCounts = 0
-                else: 
-                    # it remains pressed
-                    pass
-            else:
-                # its not pressed
-                previous_home = False
+            if check_ESC_sequence(counts=counts, timeout=timeout):
+                self.logger.log(logging.INFO, 'ESC detected')
+                self.terminate.set()
             
             await asyncio.sleep(0) # yield to other tasks
 
@@ -1183,24 +1493,24 @@ class gearVRC:
         # setup variables
 
         # ESC sequence variables
-        previous_home           = False
-        home_updateCounts       = 0
-        home_pressedTime        = time.perf_counter()
+        self.previous_home           = False
+        self.home_updateCounts       = 0
+        self.home_pressedTime        = time.perf_counter()
 
         # Virtual variables
         if args.virtual:
-            previous_virtualUpdate  = time.perf_counter()
-            virtual_lastTimeRate    = time.perf_counter()
-            virtual_updateCounts    = 0
-            previous_wheelPos       = 0
-            previous_touchX         = 0
-            previous_touchY         = 0
+            self.previous_virtualUpdate  = time.perf_counter()
+            self.virtual_lastTimeRate    = time.perf_counter()
+            self.virtual_updateCounts    = 0
+            self.previous_wheelPos       = 0
+            self.previous_touchX         = 0
+            self.previous_touchY         = 0
 
         # Fusion variables
         if args.fusion:
-            fusion_updateCounts     = 0
-            fusion_lastTimeRate     = time.perf_counter()
-            previous_fusionTime     = time.perf_counter()
+            self.fusion_updateCounts     = 0
+            self.fusion_lastTimeRate     = time.perf_counter()
+            self.previous_fusionTime     = time.perf_counter()
 
         while not self.finish_up:
 
@@ -1211,212 +1521,47 @@ class gearVRC:
 
             # ESC sequence
             ###############################################################
-            if self.home == True:
-                if not previous_home:
-                    # Home button pressed
-                    elapsed = time.perf_counter() - home_pressedTime
-                    home_updateCounts += 1
-                    previous_home = True
+            if check_ESC_sequence(counts=counts, timeout=timeout):
+                self.logger.log(logging.INFO, 'ESC detected')
+                self.terminate.set()
                     
-                    if home_updateCounts == 1:
-                        home_pressedTime = time.perf_counter()
-
-                    if (home_updateCounts == 2) and (elapsed > timeout):
-                        home_updateCounts = 1
-                        home_pressedTime = time.perf_counter()
- 
-                    elif home_updateCounts == counts:
-                        if elapsed <= timeout:
-                            # ESC sequence detected, signal finish
-                            self.logger.log(logging.INFO, 'ESC detected')
-                            self.terminate.set()
-                        else:
-                            # To slow, ESC not detected, reset
-                            home_updateCounts = 0
-                else: 
-                    # it remains pressed
-                    pass
-            else:
-                # its not pressed
-                previous_home = False
-            
             # Virtual
             ###############################################################
 
             if args.virtual:
-                
                 # We can throttle the update rate of the virtual features
-                if startTime - previous_virtualUpdate > VIRTUALUPDATEINTERVAL:
-                    previous_virtualUpdate = copy(startTime)
-
+                if startTime - self.previous_virtualUpdate > VIRTUALUPDATEINTERVAL:
+                    self.previous_virtualUpdate = copy(startTime)
+                    #
                     start_virtualUpdate = time.perf_counter()
-                    
-                    virtual_updateCounts += 1
-                    if (startTime - virtual_lastTimeRate)>= 1.:
-                        self.virtual_rate = copy(virtual_updateCounts)
-                        virtual_lastTimeRate = copy(startTime)
-                        virtual_updateCounts = 0
-
-                    # Where are we touching the pad?
-                    if not (self.touchX == 0 and self.touchY==0): 
-
-                        # Virtual Wheel
-                        #  Detects if rim of touchpad is touched and where 0..63
-                        #  Detects finger moves along wheel (rotation clockwise or counter clockwise)
-                        #  Detects if rim touched on top, left, right, bottom
-
-                        x = self.touchX - WHEELRADIUS # horizontal distance from center of touchpad
-                        y = self.touchY - WHEELRADIUS # vertical distance from center
-                        l2 = x*x + y*y                # distance from center (squared)
-                        if l2 > RTHRESH2:             # Wheel is touched
-                            self.center = False
-                            phi = (math.atan2(y,x) + TWOPI) % TWOPI # angle 0 .. 2*pi from pointing to the right counter clockwise
-                            self.wheelPos = int(math.floor(phi / TWOPI * NUMWHEELPOS))
-                            # Top, Bottom, Left, Right
-                            if self.wheelPos > NUMWHEELPOS1_8:
-                                if self.wheelPos < NUMWHEELPOS3_8:
-                                    self.top    = False
-                                    self.left   = False
-                                    self.bottom = True
-                                    self.right  = False
-                                elif self.wheelPos < NUMWHEELPOS5_8:
-                                    self.top    = False
-                                    self.left   = True
-                                    self.bottom = False
-                                    self.right  = False
-                                elif self.wheelPos < NUMWHEELPOS7_8:
-                                    self.top    = True
-                                    self.left   = False
-                                    self.bottom = False
-                                    self.right  = False
-                                else: 
-                                    self.top    = False
-                                    self.left   = False
-                                    self.bottom = False
-                                    self.right  = True
-
-                            self.logger.log(logging.DEBUG, 'Wheel Position: {}'.format(self.wheelPos))
-
-                            self.delta_wheelPos = self.wheelPos - previous_wheelPos
-                            previous_wheelPos   = copy(self.wheelPos)
-                            # deal with discontinuity at 360/0:
-                            #   general formula with intervals along a circle in degrees is
-                            #   d_a = d_a - (360. * np.floor((d_a + 180.)/360.))
-                            #   resulting in d_a between < 180 and >=-180
-                            self.delta_wheelPos -= int(MAXWHEELPOS * np.floor((self.delta_wheelPos + MAXWHEELPOS2)/MAXWHEELPOS))
-                            self.logger.log(logging.DEBUG, 'Delta Wheel Position: {}'.format(self.delta_wheelPos))
-                            if (self.delta_wheelPos > 0):
-                                # rotating clock wise
-                                self.isRotating = True
-                                self.clockwise  = True
-                                self.logger.log(logging.DEBUG, 'Wheel rotating clockwise')
-                            elif (self.delta_wheelPos < 0):
-                                # rotating counter clock wise
-                                self.isRotating = True
-                                self.clockwise  = False
-                                self.logger.log(logging.DEBUG, 'Wheel rotating counter clockwise')
-                            else:
-                                self.isRotating = False
-                                self.logger.log(logging.DEBUG, 'Wheel not rotating')
-
-                        else: # wheel not touched, but touchpad is touched
-                        
-                            # Virtual Pad
-                            #  Detects scrolling of touchpad to create absolute 'mouse' position, allowing to reach larger field than touchpad allone        
-                            self.isRotating = False
-                            self.top        = False
-                            self.left       = False
-                            self.bottom     = False
-                            self.right      = False
-                            self.center     = True
-
-                        # Movement direction on touchpad
-                        # This assesses scrolling
-                        self.deltaX = self.touchX - previous_touchX
-                        self.deltaY = self.touchY - previous_touchY
-                        previous_touchX = copy(self.touchX)
-                        previous_touchY = copy(self.touchY)
-                        if (abs(self.deltaX) < 50) and (abs(self.deltaY) < 50): # disregard large jumps such as when lifting finger between scrolling
-                            self.absX += self.deltaX 
-                            self.absY += self.deltaY 
-                            self.absX  = clamp(self.absX, MINXTOUCH, MAXXTOUCH)
-                            self.absY  = clamp(self.absY, MINYTOUCH, MAXYTOUCH)
-                            # Left or Right?
-                            if (self.deltaX > 0):
-                                self.dirRight = True
-                                self.dirLeft  = False
-                            elif (self.deltaX < 0):
-                                self.dirLeft  = True
-                                self.dirRight = False
-                            else:
-                                self.dirLeft  = False
-                                self.dirRight = False
-                            # Up or Down?
-                            if (self.deltaY > 0):
-                                self.dirDown  = True
-                                self.dirUp    = False
-                            elif (self.deltaY < 0):
-                                self.dirUp    = True
-                                self.dirDown = False
-                            else:
-                                self.dirUp    = False
-                                self.dirDown  = False
-                        
-                    else: # Touch pad was not touched
-                        self.center   = False
-                        self.top      = False
-                        self.left     = False
-                        self.bottom   = False
-                        self.right    = False
-                        self.dirUp    = False
-                        self.dirDown  = False
-                        self.dirLeft  = False
-                        self.dirRight = False
-
+                    #
+                    self.virtual_updateCounts += 1
+                    if (startTime - self.virtual_lastTimeRate)>= 1.:
+                        self.virtual_rate = copy(self.virtual_updateCounts)
+                        self.virtual_lastTimeRate = copy(startTime)
+                        self.virtual_updateCounts = 0
+                    #
+                    compute_virtual()
+                    self.logger.log(logging.DEBUG, 'Wheel Position: {}'.format(self.wheelPos))
+                    self.logger.log(logging.DEBUG, 'Delta Wheel Position: {}'.format(self.delta_wheelPos))
+                    self.logger.log(logging.DEBUG, 'Virtual Touch Position: {},{}'.format(self.absX,self.absY))
+                    #
                     self.virtual_deltaTime = time.perf_counter() - start_virtualUpdate
 
             # Fusion
             ###############################################################
 
             if args.fusion:
-
                 # update interval
                 start_fusionUpdate = time.perf_counter()
-
                 # fps
-                fusion_updateCounts += 1
-                if (startTime - fusion_lastTimeRate)>= 1.:
-                    self.fusion_rate = copy(fusion_updateCounts)
-                    fusion_lastTimeRate = copy(startTime)
-                    fusion_updateCounts = 0
-
-                # Fusion data interval, is computed from sensor provided time stamp
-                dt = self.sensorTime - previous_fusionTime # time interval between sensor data
-                previous_fusionTime = copy(self.sensorTime) # keep track of last sensor time
-
-                # Calibrate IMU Data
-                self.acc_cal = calibrate(data=self.acc, offset=self.acc_offset, crosscorr=self.acc_crosscorr)
-                self.mag_cal = calibrate(data=self.mag, offset=self.mag_offset, crosscorr=self.mag_crosscorr)
-                self.gyr_cal = calibrate(data=self.gyr, offset=self.gyr_offset, crosscorr=self.gyr_crosscorr)
-
-                if dt > 1.0: 
-                    # First run or reconnection, need AHRS algorythem to initialize
-                    if (self.mag_cal.norm >  MAGFIELD_MAX) or (self.mag_cal.norm < MAGFIELD_MIN):
-                        # Mag is not in acceptable range
-                        self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=None,dt=-1)
-                    else:
-                        self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=self.mag_cal,dt=-1)
-
-                else:
-                    if (self.mag_cal.norm >  MAGFIELD_MAX) or (self.mag_cal.norm < MAGFIELD_MIN):
-                        # Mag not in acceptable range
-                        self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=None,dt=dt)
-                    else:
-                        self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=self.mag_cal,dt=dt)
-
-                self.heading=heading(q=self.q, mag=self.mag_cal, declination=DECLINATION)
-                self.rpy=q2rpy(q=self.q)
-
+                self.fusion_updateCounts += 1
+                if (startTime - self.fusion_lastTimeRate)>= 1.:
+                    self.fusion_rate = copy(self.fusion_updateCounts)
+                    self.fusion_lastTimeRate = copy(startTime)
+                    self.fusion_updateCounts = 0
+                #
+                compute_fusion()
                 self.fusion_deltaTime = time.perf_counter() - start_fusionUpdate
 
             self.processedDataAvailable.set()
@@ -1458,11 +1603,11 @@ class gearVRC:
 
         self.logger.log(logging.INFO, 'Starting Virtual Task...')
 
-        virtual_lastTimeRate    = time.perf_counter()
-        virtual_updateCounts    = 0
-        previous_wheelPos       = 0
-        previous_touchX         = 0
-        previous_touchY         = 0
+        self.virtual_lastTimeRate    = time.perf_counter()
+        self.virtual_updateCounts    = 0
+        self.previous_wheelPos  = 0
+        self.previous_touchX    = 0
+        self.previous_touchY    = 0
 
         while not self.finish_up:
 
@@ -1474,127 +1619,18 @@ class gearVRC:
             await self.dataAvailable.wait()
             self.dataAvailable.clear()
 
-            virtual_updateCounts += 1
-            if (startTime - virtual_lastTimeRate)>= 1.:
-                self.virtual_rate = copy(virtual_updateCounts)
-                virtual_lastTimeRate = copy(startTime)
-                virtual_updateCounts = 0
+            self.virtual_updateCounts += 1
+            if (startTime - self.virtual_lastTimeRate)>= 1.:
+                self.virtual_rate = copy(self.virtual_updateCounts)
+                self.virtual_lastTimeRate = copy(startTime)
+                self.virtual_updateCounts = 0
 
             # Where are we touching the pad?
-            if not (self.touchX == 0 and self.touchY==0): 
-
-                # Virtual Wheel
-                #  Detects if rim of touchpad is touched and where 0..63
-                #  Detects finger moves along wheel (rotation clockwise or counter clockwise)
-                #  Detects if rim touched on top, left, right, bottom
-
-                x = self.touchX - WHEELRADIUS # horizontal distance from center of touchpad
-                y = self.touchY - WHEELRADIUS # vertical distance from center
-                l2 = x*x + y*y                # distance from center (squared)
-                if l2 > RTHRESH2:             # Wheel is touched
-                    self.center = False
-                    phi = (math.atan2(y,x) + TWOPI) % TWOPI # angle 0 .. 2*pi from pointing to the right counter clockwise
-                    self.wheelPos = int(math.floor(phi / TWOPI * NUMWHEELPOS))
-                    # Top, Bottom, Left, Right
-                    if self.wheelPos > NUMWHEELPOS1_8:
-                        if self.wheelPos < NUMWHEELPOS3_8:
-                            self.top    = False
-                            self.left   = False
-                            self.bottom = True
-                            self.right  = False
-                        elif self.wheelPos < NUMWHEELPOS5_8:
-                            self.top    = False
-                            self.left   = True
-                            self.bottom = False
-                            self.right  = False
-                        elif self.wheelPos < NUMWHEELPOS7_8:
-                            self.top    = True
-                            self.left   = False
-                            self.bottom = False
-                            self.right  = False
-                        else: 
-                            self.top    = False
-                            self.left   = False
-                            self.bottom = False
-                            self.right  = True
-
-                    self.logger.log(logging.DEBUG, 'Wheel Position: {}'.format(self.wheelPos))
-
-                    self.delta_wheelPos = self.wheelPos - previous_wheelPos
-                    previous_wheelPos   = copy(self.wheelPos)
-                    # deal with discontinuity at 360/0:
-                    #   general formula with intervals along a circle in degrees is
-                    #   d_a = d_a - (360. * np.floor((d_a + 180.)/360.))
-                    #   resulting in d_a between < 180 and >=-180
-                    self.delta_wheelPos -= int(MAXWHEELPOS * np.floor((self.delta_wheelPos + MAXWHEELPOS2)/MAXWHEELPOS))
-                    self.logger.log(logging.DEBUG, 'Delta Wheel Position: {}'.format(self.delta_wheelPos))
-                    if (self.delta_wheelPos > 0):
-                        # rotating clock wise
-                        self.isRotating = True
-                        self.clockwise  = True
-                        self.logger.log(logging.DEBUG, 'Wheel rotating clockwise')
-                    elif (self.delta_wheelPos < 0):
-                        # rotating counter clock wise
-                        self.isRotating = True
-                        self.clockwise  = False
-                        self.logger.log(logging.DEBUG, 'Wheel rotating counter clockwise')
-                    else:
-                        self.isRotating = False
-                        self.logger.log(logging.DEBUG, 'Wheel not rotating')
-
-                else: # wheel not touched, but touchpad is touched
-                
-                    # Virtual Pad
-                    #  Detects scrolling of touchpad to create absolute 'mouse' position, allowing to reach larger field than touchpad allone        
-                    self.isRotating = False
-                    self.top        = False
-                    self.left       = False
-                    self.bottom     = False
-                    self.right      = False
-                    self.center     = True
-
-                # Movement direction on touchpad
-                # This assesses scrolling
-                self.deltaX = self.touchX - previous_touchX
-                self.deltaY = self.touchY - previous_touchY
-                previous_touchX = copy(self.touchX)
-                previous_touchY = copy(self.touchY)
-                if (abs(self.deltaX) < 50) and (abs(self.deltaY) < 50): # disregard large jumps such as when lifting finger between scrolling
-                    self.absX += self.deltaX 
-                    self.absY += self.deltaY 
-                    self.absX  = clamp(self.absX, MINXTOUCH, MAXXTOUCH)
-                    self.absY  = clamp(self.absY, MINYTOUCH, MAXYTOUCH)
-                    # Left or Right?
-                    if (self.deltaX > 0):
-                        self.dirRight = True
-                        self.dirLeft  = False
-                    elif (self.deltaX < 0):
-                        self.dirLeft  = True
-                        self.dirRight = False
-                    else:
-                        self.dirLeft  = False
-                        self.dirRight = False
-                    # Up or Down?
-                    if (self.deltaY > 0):
-                        self.dirDown  = True
-                        self.dirUp    = False
-                    elif (self.deltaY < 0):
-                        self.dirUp    = True
-                        self.dirDown = False
-                    else:
-                        self.dirUp    = False
-                        self.dirDown  = False
-                
-            else: # Touch pad was not touched
-                self.center   = False
-                self.top      = False
-                self.left     = False
-                self.bottom   = False
-                self.right    = False
-                self.dirUp    = False
-                self.dirDown  = False
-                self.dirLeft  = False
-                self.dirRight = False
+            # Wheel and extended touchpad
+            compute_virtual()
+            self.logger.log(logging.DEBUG, 'Wheel Position: {}'.format(self.wheelPos))
+            self.logger.log(logging.DEBUG, 'Delta Wheel Position: {}'.format(self.delta_wheelPos))
+            self.logger.log(logging.DEBUG, 'Virtual Touch Position: {},{}'.format(self.absX,self.absY))
 
             self.virtual_deltaTime = time.perf_counter() - startTime
 
@@ -1613,9 +1649,9 @@ class gearVRC:
 
         self.logger.log(logging.INFO, 'Starting Fusion Task...')
 
-        fusion_updateCounts = 0
-        fusion_lastTimeRate  = time.perf_counter()
-        previous_fusionTime = time.perf_counter()
+        self.fusion_updateCounts = 0
+        self.fusion_lastTimeRate  = time.perf_counter()
+        self.previous_fusionTime = time.perf_counter()
 
         while not self.finish_up:
 
@@ -1627,45 +1663,19 @@ class gearVRC:
             self.dataAvailable.clear()
 
             # fps
-            fusion_updateCounts += 1
-            if (startTime - fusion_lastTimeRate)>= 1.:
-                self.fusion_rate = copy(fusion_updateCounts)
-                fusion_lastTimeRate = copy(startTime)
-                fusion_updateCounts = 0
+            self.fusion_updateCounts += 1
+            if (startTime - self.fusion_lastTimeRate)>= 1.:
+                self.fusion_rate = copy(self.fusion_updateCounts)
+                self.fusion_lastTimeRate = copy(startTime)
+                self.fusion_updateCounts = 0
 
-            # Fusion data interval, is computed from sensor provided time stamp
-            dt = self.sensorTime - previous_fusionTime # time interval between sensor data
-            previous_fusionTime = copy(self.sensorTime) # keep track of last sensor time
-
-            # Calibrate IMU Data
-            self.acc_cal = calibrate(data=self.acc, offset=self.acc_offset, crosscorr=self.acc_crosscorr)
-            self.mag_cal = calibrate(data=self.mag, offset=self.mag_offset, crosscorr=self.mag_crosscorr)
-            self.gyr_cal = calibrate(data=self.gyr, offset=self.gyr_offset, crosscorr=self.gyr_crosscorr)
-
-            if dt > 1.0: 
-                # First run or reconnection, need AHRS algorythem to initialize
-                if (self.mag_cal.norm >  MAGFIELD_MAX) or (self.mag_cal.norm < MAGFIELD_MIN):
-                    # Mag is not in acceptable range
-                    self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=None,dt=-1)
-                else:
-                    self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=self.mag_cal,dt=-1)
-
-            else:
-                if (self.mag_cal.norm >  MAGFIELD_MAX) or (self.mag_cal.norm < MAGFIELD_MIN):
-                    # Mag not in acceptable range
-                    self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=None,dt=dt)
-                else:
-                    self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=self.mag_cal,dt=dt)
-
-
-            self.heading=heading(q=self.q, mag=self.mag_cal, declination=DECLINATION)
-            self.rpy=q2rpy(q=self.q)
+            compute_fusion()
 
             # update interval
             self.fusion_deltaTime = time.perf_counter() - startTime
 
             # Dont wait here, we want to fuse every IMU reading
-            # Throtteling not implemented here
+            # Throttling not implemented here
             await asyncio.sleep(0)
 
         self.logger.log(logging.INFO, 'Fusion stopped')
@@ -1676,7 +1686,6 @@ class gearVRC:
         Periodically send Keep Alive commands
         Does not prevent disconnection when device is left idle
         Not sure if this is needed.
-        Not sure why mesage is repeated 4 times
         '''
         self.logger.log(logging.INFO, 'Starting Keeping Alive Task...')
 
@@ -1717,11 +1726,11 @@ class gearVRC:
 
             startTime = time.perf_counter()
 
-            report_updateCounts += 1
-            if (startTime - report_lastTimeRate)>= 1.:
-                self.report_rate = copy(report_updateCounts)
-                report_lastTimeRate = time.perf_counter()
-                report_updateCounts = 0
+            self.report_updateCounts += 1
+            if (startTime - self.report_lastTimeRate)>= 1.:
+                self.report_rate = copy(self.report_updateCounts)
+                self.report_lastTimeRate = time.perf_counter()
+                self.report_updateCounts = 0
 
             # Display the Data
             msg_out = '-------------------------------------------------\n'
@@ -1859,14 +1868,14 @@ class gearVRC:
                         count = int(match_b.group(1))
                         
                         startTime = time.perf_counter()
-                        serial_updateCounts = 0
+                        self.serial_updateCounts = 0
 
                         for i in range(count):
 
                             await self.processedDataAvailable.wait()
                             self.processedDataAvailable.clear()
 
-                            serial_updateCounts += 1
+                            self.serial_updateCounts += 1
                         
                             accX_hex=float_to_hex(self.acc.x)
                             accY_hex=float_to_hex(self.acc.y)
@@ -1889,7 +1898,7 @@ class gearVRC:
 
                         self.serial_deltaTime = time.perf_counter() - startTime
                         self.serial_rate = int(serial_updateCounts / self.serial_deltaTime)
-                        serial_updateCounts = 0
+                        self.serial_updateCounts = 0
                     else:
                         pass # unknown command
             else:
@@ -1903,9 +1912,11 @@ class gearVRC:
     async def update_zmq(self, args):
         '''
         Report data on ZMQ socket
-        There 4 datapackets sent:
-        system data
-        raw data
+        There are 6 data packets sent:
+        system 
+        imu
+        button
+        touch
         if virtual is enabled, also send virtual data
         if fusion is enabled, also send fusion data
         '''
@@ -1923,8 +1934,8 @@ class gearVRC:
         data_virtual = gearVirtualData()
         data_fusion  = gearFusionData()
 
-        zmq_lastTimeRate   = time.perf_counter()
-        zmq_updateCounts   = 0
+        self.zmq_lastTimeRate   = time.perf_counter()
+        self.zmq_updateCounts   = 0
 
         while not self.finish_up:
 
@@ -1936,11 +1947,11 @@ class gearVRC:
             self.processedDataAvailable.clear()
 
             # fps
-            zmq_updateCounts += 1
-            if (startTime - zmq_lastTimeRate)>= 1.:
-                self.zmq_rate = copy(zmq_updateCounts)
-                zmq_lastTimeRate = copy(startTime)
-                zmq_updateCounts = 0
+            self.zmq_updateCounts += 1
+            if (startTime - self.zmq_lastTimeRate)>= 1.:
+                self.zmq_rate = copy(self.zmq_updateCounts)
+                self.zmq_lastTimeRate = copy(startTime)
+                self.zmq_updateCounts = 0
 
             # format the imu data
             # these are the axis flipped but not calibrated data
