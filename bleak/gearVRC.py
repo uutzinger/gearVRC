@@ -475,7 +475,7 @@ class gearVRC:
         
         # Signals
         self.lost_connection        = asyncio.Event()
-        self.dataAvailable          = asyncio.Event()
+        # self.dataAvailable          = asyncio.Event()
         self.processedDataAvailable = asyncio.Event()
         # self.virtualDataAvailable   = asyncio.Event()
         # self.fusedDataAvailable     = asyncio.Event()
@@ -1720,7 +1720,7 @@ class gearVRC:
         self.report_lastTimeRate    = time.perf_counter()
         self.report_updateCounts    = 0
 
-        await self.dataAvailable.wait()
+        await self.processedDataAvailable.wait()
         # no clear needed as we just wait for system to start
 
         while not self.finish_up:
