@@ -392,7 +392,7 @@ class dict2obj:
                 setattr(self, key, dict2obj(value))
             else:
                 setattr(self, key, value)
-
+                
 def float_to_hex(f):
     '''
     Pack float into 8 characters 0..9,A..F
@@ -1976,7 +1976,7 @@ class gearVRC:
             data_imu.gyr  = self.gyr
             data_imu.mag  = self.mag
 
-            dict_imu    = obj2dict(data_imu)
+            dict_imu    = obj2dict(vars(data_imu))
             imu_msgpack = msgpack.packb(dict_imu)
             socket.send_multipart([b"imu", imu_msgpack])               
 
@@ -1989,7 +1989,7 @@ class gearVRC:
             data_button.volume_down = self.volume_down
             data_button.noButton    = self.noButton
 
-            dict_button    = obj2dict(data_button)
+            dict_button    = obj2dict(vars(data_button))
             button_msgpack = msgpack.packb(dict_button)
             socket.send_multipart([b"button",button_msgpack])               
 
@@ -1997,7 +1997,7 @@ class gearVRC:
             data_touch.touchX      = self.touchX
             data_touch.touchY      = self.touchY
 
-            dict_touch    = obj2dict(data_touch)
+            dict_touch    = obj2dict(vars(data_touch))
             touch_msgpack = msgpack.packb(dict_touch)
             socket.send_multipart([b"touch", touch_msgpack])               
 
@@ -2011,7 +2011,7 @@ class gearVRC:
             data_system.serial_rate    = self.serial_rate
             data_system.reporting_rate = self.report_rate
 
-            dict_system    = obj2dict(data_system)
+            dict_system    = obj2dict(vars(data_system))
             system_msgpack = msgpack.packb(dict_system)
             socket.send_multipart([b"system", system_msgpack])               
 
@@ -2034,7 +2034,7 @@ class gearVRC:
                 data_virtual.isRotating = self.isRotating
                 data_virtual.clockwise = self.clockwise
         
-                dict_virtual    = obj2dict(data_virtual)
+                dict_virtual    = obj2dict(vars(data_virtual))
                 virtual_msgpack = msgpack.packb(dict_virtual)
                 socket.send_multipart([b"virtual", virtual_msgpack])          
 
@@ -2048,7 +2048,7 @@ class gearVRC:
                 data_fusion.heading = self.heading
                 data_fusion.q   = self.q
                 
-                dict_fusion    = obj2dict(data_fusion)
+                dict_fusion    = obj2dict(vars(data_fusion))
                 fusion_msgpack = msgpack.packb(dict_fusion)
                 socket.send_multipart([b"fusion", fusion_msgpack])               
 
