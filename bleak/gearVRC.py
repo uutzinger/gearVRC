@@ -392,7 +392,7 @@ class dict2obj:
                 setattr(self, key, dict2obj(value))
             else:
                 setattr(self, key, value)
-                
+
 def float_to_hex(f):
     '''
     Pack float into 8 characters 0..9,A..F
