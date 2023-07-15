@@ -1690,7 +1690,7 @@ class gearVRC:
                 self.logger.log(logging.DEBUG,'Keep alive sent')        
                 sleepTime=KEEPALIVEINTERVAL
             else:
-                if self.sensorStarted: self.logger.log(logging.ERROR,'Could not send Keep alive')
+                if self.sensorStarted and self.connected: self.logger.log(logging.ERROR,'Could not send Keep alive')
                 # do not report keep alive issues if sensor is not yet running            
                 sleepTime=1
 
