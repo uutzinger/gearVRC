@@ -50,6 +50,7 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 from pyIMU.madgwick import Madgwick
 from pyIMU.quaternion import Vector3D, Quaternion
 from pyIMU.utilities import q2rpy, rpymag2h, qmag2h
+from pyIMU.motion import Motion
 
 import zmq
 import zmq.asyncio
@@ -268,10 +269,64 @@ def disconnect_bluetooth_device(address):
     else:
         return False
 
+def obj2dict(obj):
+    '''
+    encoding object variables to nested dict
+    ''' 
+    if isinstance(obj, dict):
+        return {k: obj2dict(v) for k, v in obj.items()}
+    elif hasattr(obj, '__dict__'):
+        return obj2dict(vars(obj))
+    elif isinstance(obj, list):
+        return [obj2dict(item) for item in obj]
+    else:
+        return obj
 
-# Data Structures
-# Useful to send with ZMQ
-# #######################################################
+class dict2obj:
+    '''
+    decoding nested dictionary to object
+    '''
+    def __init__(self, data):
+        for key, value in data.items():
+            if isinstance(value, dict):
+                setattr(self, key, dict2obj(value))
+            else:
+                setattr(self, key, value)
+
+def float_to_hex(f):
+    '''
+    Pack float into 8 characters 0..9,A..F
+    '''
+    bytes_ = struct.pack('!f', f)                            # Single precision, big-endian byte order, 4 bytes
+    hex_strings = [format(byte, '02X') for byte in bytes_]   # Convert each byte to a hexadecimal string
+    return ''.join(hex_strings)
+
+def hex_to_float(hex_chars):
+    '''
+    Unpack 8 characters to float
+    '''
+    hex_bytes = bytes.fromhex(hex_chars)  # Convert hex characters to bytes
+    return struct.unpack('!f', hex_bytes)[0]     
+
+def int_to_hex(n):
+    '''
+    Pack integer to 8 characters
+    '''
+    bytes_ = n.to_bytes((n.bit_length() + 7) // 8, 'big')  # Convert integer to bytes
+    hex_strings = [format(byte, '02X') for byte in bytes_]           # Convert each byte to a hexadecimal string
+    return ''.join(hex_strings)
+
+def hex_to_int(hex_chars):
+    '''
+    Unpack 8 characters to integer
+    '''
+    hex_bytes = bytes.fromhex(hex_chars)  # Convert hex characters to bytes
+    return struct.unpack('!i', hex_bytes)[0]
+
+###################################################################
+# Data Classes
+###################################################################
+
 class gearSystemData(object):
     '''System relevant performance data'''
     def __init__(self, temperature: float=0.0, battery_level: float =-1.0, 
@@ -367,64 +422,23 @@ class gearFusionData(object):
         self.heading        = heading
         self.q              = q
 
-# Data Structure helper functions
-#################################
-def obj2dict(obj):
-    '''
-    encoding object variables to nested dict
-    ''' 
-    if isinstance(obj, dict):
-        return {k: obj2dict(v) for k, v in obj.items()}
-    elif hasattr(obj, '__dict__'):
-        return obj2dict(vars(obj))
-    elif isinstance(obj, list):
-        return [obj2dict(item) for item in obj]
-    else:
-        return obj
-
-class dict2obj:
-    '''
-    decoding nested dictionary to object
-    '''
-    def __init__(self, data):
-        for key, value in data.items():
-            if isinstance(value, dict):
-                setattr(self, key, dict2obj(value))
-            else:
-                setattr(self, key, value)
-
-def float_to_hex(f):
-    '''
-    Pack float into 8 characters 0..9,A..F
-    '''
-    bytes_ = struct.pack('!f', f)                            # Single precision, big-endian byte order, 4 bytes
-    hex_strings = [format(byte, '02X') for byte in bytes_]   # Convert each byte to a hexadecimal string
-    return ''.join(hex_strings)
-
-def hex_to_float(hex_chars):
-    '''
-    Unpack 8 characters to float
-    '''
-    hex_bytes = bytes.fromhex(hex_chars)  # Convert hex characters to bytes
-    return struct.unpack('!f', hex_bytes)[0]     
-
-# This will decode the string created with above routines
-def int_to_hex(n):
-    '''
-    Pack integer to 8 characters
-    '''
-    bytes_ = n.to_bytes((n.bit_length() + 7) // 8, 'big')  # Convert integer to bytes
-    hex_strings = [format(byte, '02X') for byte in bytes_]           # Convert each byte to a hexadecimal string
-    return ''.join(hex_strings)
-
-def hex_to_int(hex_chars):
-    '''
-    Unpack 8 characters to integer
-    '''
-    hex_bytes = bytes.fromhex(hex_chars)  # Convert hex characters to bytes
-    return struct.unpack('!i', hex_bytes)[0]
-
-
+class gearMotionData(object):
+    '''Motion data'''
+    def __init__(self, 
+                 time: float   = 0.,
+                 residuals:    Vector3D = Vector3D(0.,0.,0.), 
+                 velocity:     Vector3D = Vector3D(0.,0.,0.), 
+                 position:     Vector3D = Vector3D(0.,0.,0.), 
+                 accBias:      Vector3D = Vector3D(0.,0.,0.), 
+                 velocityBias: Vector3D = Vector3D(0.,0.,0.), 
+                 dtmotion:     float = 0.0) -> None:
+            self.residuals    = residuals
+            self.velocity     = velocity
+            self.position     = position
+            self.dtmotion     = dtmotion
+            self.accBias      = accBias
+            self.velocityBias = velocityBias
+            
 #########################################################################################################
 # gearVRC 
 #########################################################################################################
@@ -585,6 +599,12 @@ class gearVRC:
         self.fusion_lastTimeRate    = time.perf_counter()
         self.previous_fusionTime    = time.perf_counter()
 
+        self.motion_deltaTime       = 0.
+        self.motion_rate            = 0
+        self.motion_updateCounts    = 0
+        self.motion_lastTimeRate    = time.perf_counter()
+        self.previous_motionTime    = time.perf_counter()
+
         self.report_deltaTime       = 0.
         self.report_rate            = 0
         self.report_updateInterval  = REPORTINTERVAL
@@ -666,6 +686,12 @@ class gearVRC:
 
         self.moving        = True
         self.magok         = False
+
+        # Motion
+        self.Motion        = Motion()
+        self.acceleration  = Vector3D(0.,0.,0.)
+        self.velocity      = Vector3D(0.,0.,0.)
+        self.position      = Vector3D(0.,0.,0.)
             
 
     def handle_disconnect(self,client):
@@ -1437,6 +1463,21 @@ class gearVRC:
                 #
                 self.compute_fusion()
                 self.fusion_deltaTime = time.perf_counter() - start_fusionUpdate
+
+            # Motion
+            ###############################################################
+            if self.args.motion:
+                # update interval
+                start_motionUpdate = time.perf_counter()
+                # fps
+                self.motion_updateCounts += 1
+                if (startTime - self.motion_lastTimeRate)>= 1.:
+                    self.motion_rate = copy(self.motion_updateCounts)
+                    self.motion_lastTimeRate = copy(startTime)
+                    self.motion_updateCounts = 0
+                #
+                self.compute_motion()
+                self.motion_deltaTime = time.perf_counter() - start_motionUpdate
 
         else:
             self.logger.log(logging.ERROR, 'Not enough values: {}'.format(len(data)))
@@ -2213,6 +2254,15 @@ if __name__ == '__main__':
         dest = 'fusion',
         action='store_true',
         help='turns on IMU data fusion',
+        default = False
+    )
+
+    parser.add_argument(
+        '-m',
+        '--motion',
+        dest = 'motion',
+        action='store_true',
+        help='turns on IMU motion module',
         default = False
     )
 

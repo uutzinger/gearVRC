@@ -1,13 +1,10 @@
 # gearVRC
 
 Samsung Gear VR Controller client implementation in python.
-There are two implemenations:
-- bleak/gearVRC.py
-- gatt/gearVRC.py
 
-The bleak implementation is the latest and has most features. It also "runs" on Windows.
+This implementation uses bleak for BLE communication.
 
-The gearVR Controller disconnects after inactivity. Usually a short press on the Home key will reconnect it. Disconnection occurs regardless wether you send keep alive commands to the device. At this time I don't know if disconnection also occurs when the device is just moved around or if buttons were pushed regularly or if it detects being unused.
+The gearVR Controller disconnects after inactivity. Usually a short press on the Home key will reconnect it. Disconnection occurs regardless wether you send keep alive commands to the device. Disconnection also occurs when the device is just moved around. If buttons were pushed regularly the device might not disconnect.
 
 Using gear VR Controller on Windows is cumbersome as one needs to remove the device from the system each time before using it. After inactivity disconnection one needs to also remove the device. If this process can be automated, the controller might be usable on Windows also.
 
@@ -36,6 +33,7 @@ gearVRC.py has the following options
                         report level: 0(None), 1(Rate only), 2(Regular)
   -f, --fusion          turns on IMU data fusion
   -v, --virtual         turns on virtual wheel and touchpad
+  -m, --motion			attempts calculating velocity and postion
   -s <serial>, --serial <serial>
                         serial port for reporting, e.g '/tmp/ttyV0' when you
                         are using virtual ports 'socat -d -d
@@ -57,13 +55,17 @@ gearVRC.py has the following options
 - ```-d``` switches loggin output to DEBUG
 - ```-r``` set debuggin to rate display (1), or full display (2), default is no reporting
 - ```-f``` enables AHRS sensor fusion
+- ```-m``` enables motion calculation
 - ```-v``` enables wheel simulation by sliding finger along the rim of touchpad, also enables scrolling by adding movements to previous position on touch pad
 - ```-s``` provide serial port so that freeIMUCal can obtain data from the sensors
 - ```-b``` us baudrate with default of 115200
-- ```-z``` for ZMQ data anouncement
+- ```-z``` for ZMQ data announcement
+
+## gearVRCViewer
+There is both a dummyZMQsender which simulates gearVRC and a gearVRCViewer which display the gearVRC device on the screen and applies the rotation and position. Showing button presses and touchpad is not yet implemented.
 
 ### Serial
-You can start virtual serial pors with null modem connection between the two ports:
+You can start virtual serial ports with null modem connection between the two ports:
 
 ```
 socat -d -d pty,rawer,echo=0,link=/tmp/ttyV0 pty,rawer,echo=0,link=/tmp/ttyV1
