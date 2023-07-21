@@ -2054,7 +2054,7 @@ class gearVRC:
 
         while not self.finish_up:
 
-            print('Z', end='', flush=True)
+            # print('Z', end='', flush=True)
 
             startTime = time.perf_counter()
 
@@ -2076,7 +2076,7 @@ class gearVRC:
             data_imu.mag  = self.mag
             imu_msgpack = msgpack.packb(obj2dict(vars(data_imu)))
             socket.send_multipart([b"imu", imu_msgpack])               
-            print('Zimu', end='', flush=True)
+            # print('Zimu', end='', flush=True)
 
             data_button.time        = self.sensorTime
             data_button.trigger     = self.trigger
@@ -2090,14 +2090,14 @@ class gearVRC:
             data_button.touchY      = self.touchY
             button_msgpack = msgpack.packb( obj2dict(vars(data_button)))
             socket.send_multipart([b"button",button_msgpack])               
-            print('Zbutton', end='', flush=True)
+            # print('Zbutton', end='', flush=True)
 
             data_touch.time        = self.sensorTime
             data_touch.touchX      = self.touchX
             data_touch.touchY      = self.touchY
             touch_msgpack = msgpack.packb(obj2dict(vars(data_touch)))
             socket.send_multipart([b"touch", touch_msgpack])               
-            print('Ztouch', end='', flush=True)
+            # print('Ztouch', end='', flush=True)
 
             # format the system data
             data_system.temperature    = self.temperature
@@ -2110,7 +2110,7 @@ class gearVRC:
             data_system.reporting_rate = self.report_rate
             system_msgpack = msgpack.packb(obj2dict(vars(data_system)))
             socket.send_multipart([b"system", system_msgpack])               
-            print('Zsys', end='', flush=True)
+            # print('Zsys', end='', flush=True)
 
             if self.args.virtual:
                 
@@ -2132,7 +2132,7 @@ class gearVRC:
                 data_virtual.clockwise = self.clockwise
                 virtual_msgpack = msgpack.packb(obj2dict(vars(data_virtual)))
                 socket.send_multipart([b"virtual", virtual_msgpack])
-                print('Zvirt', end='', flush=True)
+                # print('Zvirt', end='', flush=True)
 
             if self.args.fusion:
 
@@ -2146,7 +2146,7 @@ class gearVRC:
                 data_fusion.q   = self.q
                 fusion_msgpack = msgpack.packb(obj2dict(vars(data_fusion)))
                 socket.send_multipart([b"fusion", fusion_msgpack])   
-                print('Zfuse', end='', flush=True)
+                # print('Zfuse', end='', flush=True)
                 
             if self.args.motion:
                 data_motion.time      = self.sensorTime
@@ -2158,7 +2158,7 @@ class gearVRC:
                 data_motion.dtmotion  = self.dtmotion
                 motion_msgpack = msgpack.packb(obj2dict(vars(data_motion)))
                 socket.send_multipart([b"motion", motion_msgpack])
-                print('Zmotion', end='', flush=True)
+                # print('Zmotion', end='', flush=True)
 
             # update interval
             self.zmq_deltaTime = time.perf_counter() - startTime
