@@ -816,6 +816,10 @@ class gearVRC:
                         
                         # Wait until disconnection occurs
                         await self.lost_connection.wait()
+
+                        # Connection was lost
+                        self.sensorIsBooting = True
+                        self.sensorRunInCounts = 0
                         
                         if not self.finish_up: 
                             self.logger.log(logging.INFO,'Lost connection to {}'.format(self.device_name))            
@@ -1467,6 +1471,7 @@ class gearVRC:
             self.sensorRunInCounts += 1
             if self.sensorRunInCounts > 50:
                 self.sensorIsBooting = False
+                self.sensorRunInCounts = 0
 
         # Update rate
         self.data_updateCounts += 1
