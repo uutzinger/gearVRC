@@ -746,12 +746,17 @@ class gearVRC:
 
             # print('C', end='', flush=True)
             
-            # Make sure device is not already connected ...
+            # Make sure device is not already connected
+            # not available on Windows
+            ###########################################
             if self.device_address is not None:
                 if check_bluetooth_connected(self.device_address):
                     self.logger.log(logging.INFO,'Device {} is already connected. Disconnecting...'.format(self.device_name))
                     if disconnect_bluetooth_device(self.device_address):
+                        self.connected = False
                         self.logger.log(logging.INFO,'Device {} successfully disconnected'.format(self.device_name))
+                else:
+                    self.connected = False
 
             # Scan for Device
             #################
@@ -761,50 +766,61 @@ class gearVRC:
             if self.device_name is not None:
                 self.device = await BleakScanner.find_device_by_name(self.device_name, timeout=BLETIMEOUT)
             if self.device is None:
+                # find by address because find by name did not work
                 if self.device_address is not None:
                     self.device = await BleakScanner.find_device_by_address(self.device_address, timeout=BLETIMEOUT)
     
             # Connect to Device
             ###################
             if self.device is not None:
-                # Create client
-                self.logger.log(logging.INFO,'Found {}'.format(self.device_name))
-                self.client = BleakClient(self.device, disconnected_callback=self.handle_disconnect, timeout=BLETIMEOUT)
-                # Connect to device
-                if not (self.client is None):
-                    if not self.client.is_connected:
-                        await self.client.connect()
-                        if self.client.is_connected:
-                            self.connected=True # signal we have connection
-                            self.lost_connection.clear()
-                            self.logger.log(logging.INFO,'Connected to {}'.format(self.device_name))
-                            self.logger.log(logging.INFO,'Finding Characteristics')
-                            # this needs to be run each time we create a new client
-                            self.find_characteristics() # scan and assign device characteristics
-                            if first_time:
-                                # We dont need to read device information each time, as it remains the same
-                                self.logger.log(logging.INFO,'Reading Device Information')
-                                await self.read_deviceInformation() # populate device information
-                                first_time = False
-                            # this needs to be run each time we create a new client
-                            self.logger.log(logging.INFO,'Starting Sensor')
-                            await self.start_sensor(self.VRMode) # start the sensors
-                            self.startTime = time.perf_counter()
-                            # this needs to be run each time we create a new client
-                            self.logger.log(logging.INFO,'Subscribing to Notifications')
-                            await self.subscribe_notifications() # subscribe to device characteristics that have notification function
-                            self.logger.log(logging.INFO,'Setup completed')
-                        else:
-                            self.connected=False
-                            self.logger.log(logging.ERROR,"Could not connect to {}".format(self.device_name))
-                    else:
-                        self.logger.log(logging.INFO,'{} is already connected'.format(self.device_name))
 
-                # reset timers
-                self.update_times()
-                # Wait until disconnection occurs
-                await self.lost_connection.wait()
-                if not self.finish_up: self.logger.log(logging.INFO,'Lost connection to {}'.format(self.device_name))            
+                self.logger.log(logging.INFO,'Found {}'.format(self.device_name))
+
+                # Create client                
+                async with BleakClient(self.device, disconnected_callback=self.handle_disconnect, timeout=BLETIMEOUT) as self.client:
+                    # Connect to device
+                    if not self.client.is_connected:
+                        self.logger.log(logging.INFO,'Connecting to {}'.format(self.device_name))
+                        await self.client.connect()
+                    else:
+                        self.logger.log(logging.INFO,'Already connected to {}'.format(self.device_name))
+
+                    if self.client.is_connected:
+                        self.connected = True
+                        self.lost_connection.clear()
+                        self.logger.log(logging.INFO,'Finding Characteristics')
+                        # this needs to be run each time we create a new client
+                        self.find_characteristics() # scan and assign device characteristics
+                        # This needs to be run only once
+                        if first_time:
+                            # We dont need to read device information each time, as it remains the same
+                            self.logger.log(logging.INFO,'Reading Device Information')
+                            await self.read_deviceInformation() # populate device information
+                            first_time = False
+                        # this needs to be run each time we create a new client
+                        self.logger.log(logging.INFO,'Starting Sensor')
+                        await self.start_sensor(self.VRMode) # start the sensors
+                        self.startTime = time.perf_counter()
+                        # this needs to be run each time we create a new client
+                        self.logger.log(logging.INFO,'Subscribing to Notifications')
+                        await self.subscribe_notifications() # subscribe to device characteristics that have notification function
+                        self.logger.log(logging.INFO,'Setup completed')
+                    else:
+                        self.connected = False
+
+                    if self.connected:
+                        # reset timers
+                        # self.update_times()
+                        
+                        # Wait until disconnection occurs
+                        await self.lost_connection.wait()
+                        
+                        if not self.finish_up: 
+                            self.logger.log(logging.INFO,'Lost connection to {}'.format(self.device_name))            
+                    else:
+                        self.logger.log(logging.ERROR,"Could not connect to {}".format(self.device_name))
+
+                # Lost connection or could not connect                        
                 sleep_time = 1.0
 
             else: 

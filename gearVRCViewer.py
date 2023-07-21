@@ -96,71 +96,90 @@ class zmqWorker(QObject):
         self.timedout   = False
         
         context = zmq.Context()
+        poller = zmq.Poller()
+        
         socket = context.socket(zmq.SUB)
         socket.setsockopt(zmq.SUBSCRIBE, b"fusion") 
         socket.setsockopt(zmq.SUBSCRIBE, b"button")
         socket.setsockopt(zmq.SUBSCRIBE, b"motion")
         socket.connect(self.zmqPort)
-        poller = zmq.Poller()
         poller.register(socket, zmq.POLLIN)
 
         self.logger.log(logging.INFO, 'zmqWorker started on {}'.format(self.zmqPort))
                 
         while self.running:
-            events = dict(poller.poll(timeout = self.zmqTimeout))
-            if socket in events and events[socket] == zmq.POLLIN:
-                response = socket.recv_multipart()
-                if len(response) == 2:
-                    [topic, msg_packed] = response
-                    if topic == b"fusion":
-                        msg_dict = msgpack.unpackb(msg_packed)
-                        data_fusion = dict2obj(msg_dict)
-                        if hasattr(data_fusion, 'q') and \
-                           hasattr(data_fusion, 'rpy') and \
-                           hasattr(data_fusion, 'heading') and\
-                           hasattr(data_fusion, 'time'):
-                            self.new_fusion = True
-                    elif topic == b"button":
-                        msg_dict = msgpack.unpackb(msg_packed)
-                        data_button = dict2obj(msg_dict)
-                        if hasattr(data_button, 'trigger') and \
-                           hasattr(data_button, 'back') and \
-                           hasattr(data_button, 'home') and \
-                           hasattr(data_button, 'volume_up') and \
-                           hasattr(data_button, 'volume_down') and \
-                           hasattr(data_button, 'touch') and \
-                           hasattr(data_button, 'noButton') and \
-                           hasattr(data_button, 'touchX') and \
-                           hasattr(data_button, 'touchY') and\
-                           hasattr(data_button, 'time'):
-                            self.new_button = True
-                    elif topic == b"motion":
-                        msg_dict = msgpack.unpackb(msg_packed)
-                        data_motion = dict2obj(msg_dict)
-                        if hasattr(data_motion, 'time') and \
-                           hasattr(data_motion, 'residuals') and \
-                           hasattr(data_motion, 'velocity') and \
-                           hasattr(data_motion, 'position') and \
-                           hasattr(data_motion, 'accBias') and \
-                           hasattr(data_motion, 'velocityBias') and \
-                           hasattr(data_motion, 'dtmotion'):
-                            self.new_motion = True            
+            try:
+                events = dict(poller.poll(timeout = self.zmqTimeout))
+                if socket in events and events[socket] == zmq.POLLIN:
+                    response = socket.recv_multipart()
+                    if len(response) == 2:
+                        [topic, msg_packed] = response
+                        if topic == b"fusion":
+                            msg_dict = msgpack.unpackb(msg_packed)
+                            data_fusion = dict2obj(msg_dict)
+                            if hasattr(data_fusion, 'q') and \
+                            hasattr(data_fusion, 'rpy') and \
+                            hasattr(data_fusion, 'heading') and\
+                            hasattr(data_fusion, 'time'):
+                                self.new_fusion = True
+                        elif topic == b"button":
+                            msg_dict = msgpack.unpackb(msg_packed)
+                            data_button = dict2obj(msg_dict)
+                            if hasattr(data_button, 'trigger') and \
+                            hasattr(data_button, 'back') and \
+                            hasattr(data_button, 'home') and \
+                            hasattr(data_button, 'volume_up') and \
+                            hasattr(data_button, 'volume_down') and \
+                            hasattr(data_button, 'touch') and \
+                            hasattr(data_button, 'noButton') and \
+                            hasattr(data_button, 'touchX') and \
+                            hasattr(data_button, 'touchY') and\
+                            hasattr(data_button, 'time'):
+                                self.new_button = True
+                        elif topic == b"motion":
+                            msg_dict = msgpack.unpackb(msg_packed)
+                            data_motion = dict2obj(msg_dict)
+                            if hasattr(data_motion, 'time') and \
+                            hasattr(data_motion, 'residuals') and \
+                            hasattr(data_motion, 'velocity') and \
+                            hasattr(data_motion, 'position') and \
+                            hasattr(data_motion, 'accBias') and \
+                            hasattr(data_motion, 'velocityBias') and \
+                            hasattr(data_motion, 'dtmotion'):
+                                self.new_motion = True            
+                        else:
+                            pass # not a topic we need
                     else:
-                        pass # not a topic we need
-                else:
-                    self.logger.log(logging.DEBUG, 'zmqWorker malformed message')
-            else: # ZMQ TIMEOUT
-                self.logger.log(logging.DEBUG, 'zmqWorker timed out')
-                self.timedout = True
+                        self.logger.log(logging.ERROR, 'zmqWorker malformed message')
+                else: # ZMQ TIMEOUT
+                    self.logger.log(logging.ERROR, 'zmqWorker timed out')
+                    self.timedout = True
+                    poller.unregister(socket)
+                    socket.close()
+                    socket = context.socket(zmq.SUB)
+                    socket.setsockopt(zmq.SUBSCRIBE, b"fusion") 
+                    socket.setsockopt(zmq.SUBSCRIBE, b"button")
+                    socket.setsockopt(zmq.SUBSCRIBE, b"motion")
+                    socket.connect(self.zmqPort)
+                    poller.register(socket, zmq.POLLIN)
+                    
+                if (self.new_fusion and self.new_button and self.new_motion) and not self.timedout:
+                    if not self.paused:
+                        self.dataReady.emit([data_button, data_fusion, data_motion])
+                        self.new_fusion = False
+                        self.new_button = False
+                        self.new_motion = False
+                        self.timedout   = False
+            except:
+                self.logger.log(logging.ERROR, 'zmqWorker error')
+                poller.unregister(socket)
+                socket.close()
+                socket = context.socket(zmq.SUB)
+                socket.setsockopt(zmq.SUBSCRIBE, b"fusion") 
+                socket.setsockopt(zmq.SUBSCRIBE, b"button")
+                socket.setsockopt(zmq.SUBSCRIBE, b"motion")
                 socket.connect(self.zmqPort)
-                
-            if (self.new_fusion and self.new_button and self.new_motion) and not self.timedout:
-                if not self.paused:
-                    self.dataReady.emit([data_button, data_fusion, data_motion])
-                    self.new_fusion = False
-                    self.new_button = False
-                    self.new_motion = False
-                    self.timedout   = False
+                poller.register(socket, zmq.POLLIN)
 
         self.logger.log(logging.DEBUG, 'zmqWorker finished')
         socket.close()
@@ -273,10 +292,10 @@ class GLWidget(QOpenGLWidget):
 
         # Translation the controller with motion
         # Will need to implement motion in gear VR Controller  
-        if self.motion is not None:
-            position = self.motion.position
-            
-        glTranslatef(position.y, -position.z, -position.x)
+        # if self.motion is not None:
+        #    position = self.motion.position
+        #    
+        # glTranslatef(position.y, -position.z, -position.x)
 
         # Rotating the controller with Quaternion
         angle = 2 * math.acos(q.w) * 180.0 / math.pi
