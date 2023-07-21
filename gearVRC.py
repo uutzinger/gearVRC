@@ -697,6 +697,21 @@ class gearVRC:
         self.accBias       = Vector3D(0.,0.,0.)
         self.velocityBias  = Vector3D(0.,0.,0.)
 
+    def update_times(self):
+        self.home_pressedTime       = time.perf_counter()
+        self.data_lastTime          = time.perf_counter()
+        self.data_lastTimeRate      = time.perf_counter()
+        self.virtual_lastTimeRate   = time.perf_counter()
+        self.previous_virtualUpdate = time.perf_counter()
+        self.fusion_lastTimeRate    = time.perf_counter()
+        self.previous_fusionTime    = time.perf_counter()
+        self.report_lastTimeRate    = time.perf_counter()
+        self.zmq_lastTimeRate       = time.perf_counter()
+        self.motion_lastTimeRate    = time.perf_counter()
+        self.previous_motionTime    = time.perf_counter()
+        self.firstTimeMotion        = time.perf_counter()
+    
+
     def handle_disconnect(self,client):
         self.logger.log(logging.INFO,'Client disconnected, Signaling...')
         self.connected=False
@@ -771,6 +786,7 @@ class gearVRC:
                     else:
                         self.logger.log(logging.INFO,'{} is already connected'.format(self.device_name))
 
+                self.update_times()
                 # Wait until disconnection occurs
                 await self.lost_connection.wait()
                 if not self.finish_up: self.logger.log(logging.INFO,'Lost connection to {}'.format(self.device_name))            
@@ -1316,6 +1332,7 @@ class gearVRC:
         self.velocity     = self.Position.worldVelocity
         self.position     = self.Position.worldPosition
         self.dtmotion     = self.Position.dtmotion
+        self.dt           = self.Position.dt
         self.accBias      = self.Position.residuals_bias
         self.velocityBias = self.Position.worldVelocity_drift
                     
@@ -1894,8 +1911,7 @@ class gearVRC:
                     msg_out+= 'Pos      {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.position.x,self.position.y,self.position.z,self.position.norm)
                     msg_out+= 'Vel Bias {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.velocityBias.x,self.velocityBias.y,self.velocityBias.z,self.velocityBias.norm)
                     msg_out+= 'Acc Bias {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.accBias.x,self.accBias.y,self.accBias.z,self.accBias.norm)
-                    msg_out+= 'dt       {:>10.6f}\n'.format(self.dtmotion)
-
+                    msg_out+= 'dt       {:>10.6f} s {:>10.6f} ms\n'.format(self.dtmotion, self.dt*1000.)
 
             print(msg_out, flush=True)
 
