@@ -701,7 +701,9 @@ class gearVRC:
         self.velocityBias  = Vector3D(0.,0.,0.)
 
         # First Time Getting Data
-        self.firstTimeData     = True
+        self.firstTimeData     = True  # want to initialize average acc,mag,gyr with current reading first time
+        self.sensorIsBooting   = True  # need to read sensor a few times until we get reasonable data
+        self.sensorRunInCounts = 0     # for bootup
 
     def update_times(self):
         self.home_pressedTime       = time.perf_counter()
@@ -1461,6 +1463,11 @@ class gearVRC:
 
         startTime = time.perf_counter()
 
+        if self.sensorIsBooting:
+            self.sensorRunInCounts += 1
+            if self.sensorRunInCounts > 50:
+                self.sensorIsBooting = False
+
         # Update rate
         self.data_updateCounts += 1
         if startTime - self.data_lastTimeRate >= 1:
@@ -1468,83 +1475,84 @@ class gearVRC:
             self.data_lastTimeRate = copy(startTime)
             self.data_updateCounts = 0
 
-        # Decode the data        
+        # Process the Data
         ###############################################################
+        if not self.sensorIsBooting:
 
-        if (len(data) >= 60):
+            if (len(data) >= 60):
 
-            # Decode
-            ###############################################################
-            self.decode_data(data)
+                # Decode
+                ###############################################################
+                self.decode_data(data)
 
-            # ESC sequence
-            ###############################################################
-            if self.check_ESC_sequence():
-                self.logger.log(logging.INFO, 'ESC detected')
-                self.terminate.set()
-                    
-            # Virtual
-            ###############################################################
-            if self.args.virtual:
-                # We throttle the update rate of the virtual features
-                if startTime - self.previous_virtualUpdate >= self.virtual_updateInterval:
-                    self.previous_virtualUpdate = copy(startTime)
+                # ESC sequence
+                ###############################################################
+                if self.check_ESC_sequence():
+                    self.logger.log(logging.INFO, 'ESC detected')
+                    self.terminate.set()
+                        
+                # Virtual
+                ###############################################################
+                if self.args.virtual:
+                    # We throttle the update rate of the virtual features
+                    if startTime - self.previous_virtualUpdate >= self.virtual_updateInterval:
+                        self.previous_virtualUpdate = copy(startTime)
+                        #
+                        start_virtualUpdate = time.perf_counter()
+                        self.virtual_updateCounts += 1
+                        if (startTime - self.virtual_lastTimeRate)>= 1.:
+                            self.virtual_rate = copy(self.virtual_updateCounts)
+                            self.virtual_lastTimeRate = copy(startTime)
+                            self.virtual_updateCounts = 0
+                        #
+                        self.compute_virtual()
+                        # self.logger.log(logging.DEBUG, 'Wheel Position: {}'.format(self.wheelPos))
+                        # self.logger.log(logging.DEBUG, 'Delta Wheel Position: {}'.format(self.delta_wheelPos))
+                        # self.logger.log(logging.DEBUG, 'Virtual Touch Position: {},{}'.format(self.absX,self.absY))
+                        #
+                        self.virtual_deltaTime = time.perf_counter() - start_virtualUpdate
+
+                # Fusion
+                ###############################################################
+                if self.args.fusion:
+                    # update interval
+                    start_fusionUpdate = time.perf_counter()
+                    # fps
+                    self.fusion_updateCounts += 1
+                    if (startTime - self.fusion_lastTimeRate)>= 1.:
+                        self.fusion_rate = copy(self.fusion_updateCounts)
+                        self.fusion_lastTimeRate = copy(startTime)
+                        self.fusion_updateCounts = 0
                     #
-                    start_virtualUpdate = time.perf_counter()
-                    self.virtual_updateCounts += 1
-                    if (startTime - self.virtual_lastTimeRate)>= 1.:
-                        self.virtual_rate = copy(self.virtual_updateCounts)
-                        self.virtual_lastTimeRate = copy(startTime)
-                        self.virtual_updateCounts = 0
-                    #
-                    self.compute_virtual()
-                    # self.logger.log(logging.DEBUG, 'Wheel Position: {}'.format(self.wheelPos))
-                    # self.logger.log(logging.DEBUG, 'Delta Wheel Position: {}'.format(self.delta_wheelPos))
-                    # self.logger.log(logging.DEBUG, 'Virtual Touch Position: {},{}'.format(self.absX,self.absY))
-                    #
-                    self.virtual_deltaTime = time.perf_counter() - start_virtualUpdate
+                    self.compute_fusion()
+                    self.fusion_deltaTime = time.perf_counter() - start_fusionUpdate
 
-            # Fusion
-            ###############################################################
-            if self.args.fusion:
-                # update interval
-                start_fusionUpdate = time.perf_counter()
-                # fps
-                self.fusion_updateCounts += 1
-                if (startTime - self.fusion_lastTimeRate)>= 1.:
-                    self.fusion_rate = copy(self.fusion_updateCounts)
-                    self.fusion_lastTimeRate = copy(startTime)
-                    self.fusion_updateCounts = 0
-                #
-                self.compute_fusion()
-                self.fusion_deltaTime = time.perf_counter() - start_fusionUpdate
+                # Motion
+                ###############################################################
+                if self.args.motion:
+                    # update interval
+                    start_motionUpdate = time.perf_counter()
+                    # fps
+                    self.motion_updateCounts += 1
+                    if (startTime - self.motion_lastTimeRate)>= 1.:
+                        self.motion_rate = copy(self.motion_updateCounts)
+                        self.motion_lastTimeRate = copy(startTime)
+                        self.motion_updateCounts = 0
+                        
+                    # we need some time to compute averages, once system is stable start compute motion.
+                    if start_motionUpdate - self.firstTimeMotion > 5.0:
+                        self.compute_motion()
 
-            # Motion
-            ###############################################################
-            if self.args.motion:
-                # update interval
-                start_motionUpdate = time.perf_counter()
-                # fps
-                self.motion_updateCounts += 1
-                if (startTime - self.motion_lastTimeRate)>= 1.:
-                    self.motion_rate = copy(self.motion_updateCounts)
-                    self.motion_lastTimeRate = copy(startTime)
-                    self.motion_updateCounts = 0
-                    
-                # we need some time to compute averages, once system is stable start compute motion.
-                if start_motionUpdate - self.firstTimeMotion > 5.0:
-                    self.compute_motion()
+                    self.motion_deltaTime = time.perf_counter() - start_motionUpdate
 
-                self.motion_deltaTime = time.perf_counter() - start_motionUpdate
+            else:
+                self.logger.log(logging.ERROR, 'Not enough values: {}'.format(len(data)))
+                # switch to sensor mode
+                await self.start_sensor(VRMode = False)
 
-        else:
-            self.logger.log(logging.ERROR, 'Not enough values: {}'.format(len(data)))
-            # switch to sensor mode
-            await self.start_sensor(VRMode = False)
-
-        self.processedDataAvailable.set()
-        
-        self.data_deltaTime = time.perf_counter() - startTime
+            self.processedDataAvailable.set()
+            
+            self.data_deltaTime = time.perf_counter() - startTime
 
         await asyncio.sleep(0) # allow other tasks to run
 
@@ -2070,7 +2078,7 @@ class gearVRC:
 
         while not self.finish_up:
 
-            print('Z', end='', flush=True)
+            # print('Z', end='', flush=True)
 
             startTime = time.perf_counter()
 
@@ -2092,7 +2100,7 @@ class gearVRC:
             data_imu.mag  = self.mag
             imu_msgpack = msgpack.packb(obj2dict(vars(data_imu)))
             socket.send_multipart([b"imu", imu_msgpack])               
-            print('Zimu', end='', flush=True)
+            # print('Zimu', end='', flush=True)
 
             data_button.time        = self.sensorTime
             data_button.trigger     = self.trigger
@@ -2106,14 +2114,14 @@ class gearVRC:
             data_button.touchY      = self.touchY
             button_msgpack = msgpack.packb( obj2dict(vars(data_button)))
             socket.send_multipart([b"button",button_msgpack])               
-            print('Zbutton', end='', flush=True)
+            # print('Zbutton', end='', flush=True)
 
             data_touch.time        = self.sensorTime
             data_touch.touchX      = self.touchX
             data_touch.touchY      = self.touchY
             touch_msgpack = msgpack.packb(obj2dict(vars(data_touch)))
             socket.send_multipart([b"touch", touch_msgpack])               
-            print('Ztouch', end='', flush=True)
+            # print('Ztouch', end='', flush=True)
 
             # format the system data
             data_system.temperature    = self.temperature
@@ -2126,7 +2134,7 @@ class gearVRC:
             data_system.reporting_rate = self.report_rate
             system_msgpack = msgpack.packb(obj2dict(vars(data_system)))
             socket.send_multipart([b"system", system_msgpack])               
-            print('Zsys', end='', flush=True)
+            # print('Zsys', end='', flush=True)
 
             if self.args.virtual:
                 
@@ -2148,7 +2156,7 @@ class gearVRC:
                 data_virtual.clockwise = self.clockwise
                 virtual_msgpack = msgpack.packb(obj2dict(vars(data_virtual)))
                 socket.send_multipart([b"virtual", virtual_msgpack])
-                print('Zvirt', end='', flush=True)
+                # print('Zvirt', end='', flush=True)
 
             if self.args.fusion:
 
@@ -2162,7 +2170,7 @@ class gearVRC:
                 data_fusion.q   = self.q
                 fusion_msgpack = msgpack.packb(obj2dict(vars(data_fusion)))
                 socket.send_multipart([b"fusion", fusion_msgpack])   
-                print('Zfuse', end='', flush=True)
+                # print('Zfuse', end='', flush=True)
                 
             if self.args.motion:
                 data_motion.time      = self.sensorTime
@@ -2174,7 +2182,7 @@ class gearVRC:
                 data_motion.dtmotion  = self.dtmotion
                 motion_msgpack = msgpack.packb(obj2dict(vars(data_motion)))
                 socket.send_multipart([b"motion", motion_msgpack])
-                print('Zmotion', end='', flush=True)
+                # print('Zmotion', end='', flush=True)
 
             # update interval
             self.zmq_deltaTime = time.perf_counter() - startTime
@@ -2337,7 +2345,7 @@ if __name__ == '__main__':
         dest = 'fusion',
         action='store_true',
         help='turns on IMU data fusion',
-        default = False
+        default = True
     )
 
     parser.add_argument(
