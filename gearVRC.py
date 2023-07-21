@@ -694,6 +694,7 @@ class gearVRC:
         self.velocity      = Vector3D(0.,0.,0.)
         self.position      = Vector3D(0.,0.,0.)
         self.dtmotion      = 0.
+        self.dt            = 0.
         self.accBias       = Vector3D(0.,0.,0.)
         self.velocityBias  = Vector3D(0.,0.,0.)
 
@@ -1852,7 +1853,7 @@ class gearVRC:
                 msg_out+= '-------------------------------------------------\n'
 
             if self.args.report > 1:
-
+                # print('R1', end='', flush=True)
                 # msg_out+= 'Time  {:>10.6f}, {:>10.6f}, {:>10.6f}\n'.format(self.sensorTime, self.aTime, self.bTime)
                 # msg_out+= 'dt    {:>10.6f}, {:>10.6f}, {:>10.6f}\n'.format(self.delta_sensorTime, self.delta_aTime, self.delta_bTime)
                 msg_out+= 'Time  {:>10.6f}, dt {:>10.6f}\n'.format(self.sensorTime, self.delta_sensorTime)
@@ -1866,6 +1867,7 @@ class gearVRC:
                 msg_out+= 'Moving:   {}\n'.format('Y' if self.moving else 'N')
 
                 msg_out+= '-------------------------------------------------\n'
+                # print('R2', end='', flush=True)
 
                 msg_out+= 'Trig:{} Touch:{} Back:{} Home:{}, Vol+:{} Vol-:{} Any:{}\n'.format(
                                                     'Y' if self.trigger     else 'N', 
@@ -1878,6 +1880,7 @@ class gearVRC:
 
                 msg_out+= '-------------------------------------------------\n'
 
+                # print('R3', end='', flush=True)
                 msg_out+= 'TPad:  {:>3d},{:>3d}\n'.format(self.touchX, self.touchY)
 
                 if self.args.virtual:
@@ -1899,6 +1902,7 @@ class gearVRC:
 
                     msg_out+= '-------------------------------------------------\n'
 
+                # print('R4', end='', flush=True)
                 if self.args.fusion:
 
                     msg_out+= 'Acc     {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.acc_cal.x,self.acc_cal.y,self.acc_cal.z,self.acc_cal.norm)
@@ -1912,16 +1916,20 @@ class gearVRC:
                     
                     msg_out+= 'Using Mag in AHRS: {}\n'.format('Y' if self.magok else 'N')
 
+                #print('R5', end='', flush=True)
                 if self.args.motion:
                     msg_out+= '-------------------------------------------------\n'
+                    # print('R6a', end='', flush=True)
 
                     msg_out+= 'Residual {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.residuals.x,self.residuals.y,self.residuals.z,self.residuals.norm)
                     msg_out+= 'Vel      {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.velocity.x,self.velocity.y,self.velocity.z,self.velocity.norm)
                     msg_out+= 'Pos      {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.position.x,self.position.y,self.position.z,self.position.norm)
                     msg_out+= 'Vel Bias {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.velocityBias.x,self.velocityBias.y,self.velocityBias.z,self.velocityBias.norm)
                     msg_out+= 'Acc Bias {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.accBias.x,self.accBias.y,self.accBias.z,self.accBias.norm)
+                    # print('R6', end='', flush=True)
                     msg_out+= 'dt       {:>10.6f} s {:>10.6f} ms\n'.format(self.dtmotion, self.dt*1000.)
 
+                #print('R6', end='', flush=True)
             print(msg_out, flush=True)
 
             self.report_deltaTime = time.perf_counter() - startTime
