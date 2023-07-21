@@ -761,6 +761,7 @@ class gearVRC:
             if self.device_name is not None:
                 self.device = await BleakScanner.find_device_by_name(self.device_name, timeout=BLETIMEOUT)
             if self.device is None:
+                # find by address because find by name did not work
                 if self.device_address is not None:
                     self.device = await BleakScanner.find_device_by_address(self.device_address, timeout=BLETIMEOUT)
     
