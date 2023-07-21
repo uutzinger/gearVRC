@@ -746,12 +746,17 @@ class gearVRC:
 
             # print('C', end='', flush=True)
             
-            # Make sure device is not already connected ...
+            # Make sure device is not already connected
+            # not available on Windows
+            ###########################################
             if self.device_address is not None:
                 if check_bluetooth_connected(self.device_address):
                     self.logger.log(logging.INFO,'Device {} is already connected. Disconnecting...'.format(self.device_name))
                     if disconnect_bluetooth_device(self.device_address):
+                        self.connected = False
                         self.logger.log(logging.INFO,'Device {} successfully disconnected'.format(self.device_name))
+                else:
+                    self.connected = False
 
             # Scan for Device
             #################
@@ -768,44 +773,54 @@ class gearVRC:
             # Connect to Device
             ###################
             if self.device is not None:
-                # Create client
-                self.logger.log(logging.INFO,'Found {}'.format(self.device_name))
-                self.client = BleakClient(self.device, disconnected_callback=self.handle_disconnect, timeout=BLETIMEOUT)
-                # Connect to device
-                if not (self.client is None):
-                    if not self.client.is_connected:
-                        await self.client.connect()
-                        if self.client.is_connected:
-                            self.connected=True # signal we have connection
-                            self.lost_connection.clear()
-                            self.logger.log(logging.INFO,'Connected to {}'.format(self.device_name))
-                            self.logger.log(logging.INFO,'Finding Characteristics')
-                            # this needs to be run each time we create a new client
-                            self.find_characteristics() # scan and assign device characteristics
-                            if first_time:
-                                # We dont need to read device information each time, as it remains the same
-                                self.logger.log(logging.INFO,'Reading Device Information')
-                                await self.read_deviceInformation() # populate device information
-                                first_time = False
-                            # this needs to be run each time we create a new client
-                            self.logger.log(logging.INFO,'Starting Sensor')
-                            await self.start_sensor(self.VRMode) # start the sensors
-                            self.startTime = time.perf_counter()
-                            # this needs to be run each time we create a new client
-                            self.logger.log(logging.INFO,'Subscribing to Notifications')
-                            await self.subscribe_notifications() # subscribe to device characteristics that have notification function
-                            self.logger.log(logging.INFO,'Setup completed')
-                        else:
-                            self.connected=False
-                            self.logger.log(logging.ERROR,"Could not connect to {}".format(self.device_name))
-                    else:
-                        self.logger.log(logging.INFO,'{} is already connected'.format(self.device_name))
 
-                # reset timers
-                self.update_times()
-                # Wait until disconnection occurs
-                await self.lost_connection.wait()
-                if not self.finish_up: self.logger.log(logging.INFO,'Lost connection to {}'.format(self.device_name))            
+                self.logger.log(logging.INFO,'Found {}'.format(self.device_name))
+
+                # Create client                
+                async with BleakClient(self.device, disconnected_callback=self.handle_disconnect, timeout=BLETIMEOUT) as self.client:
+                    # Connect to device
+                    if not self.client.is_connected:
+                        self.logger.log(logging.INFO,'Connecting to {}'.format(self.device_name))
+                        await self.client.connect()
+                    else:
+                        self.logger.log(logging.INFO,'Already connected to {}'.format(self.device_name))
+
+                    if self.client.is_connected:
+                        self.connected = True
+                        self.lost_connection.clear()
+                        self.logger.log(logging.INFO,'Finding Characteristics')
+                        # this needs to be run each time we create a new client
+                        self.find_characteristics() # scan and assign device characteristics
+                        # This needs to be run only once
+                        if first_time:
+                            # We dont need to read device information each time, as it remains the same
+                            self.logger.log(logging.INFO,'Reading Device Information')
+                            await self.read_deviceInformation() # populate device information
+                            first_time = False
+                        # this needs to be run each time we create a new client
+                        self.logger.log(logging.INFO,'Starting Sensor')
+                        await self.start_sensor(self.VRMode) # start the sensors
+                        self.startTime = time.perf_counter()
+                        # this needs to be run each time we create a new client
+                        self.logger.log(logging.INFO,'Subscribing to Notifications')
+                        await self.subscribe_notifications() # subscribe to device characteristics that have notification function
+                        self.logger.log(logging.INFO,'Setup completed')
+                    else:
+                        self.connected = False
+
+                    if self.connected:
+                        # reset timers
+                        # self.update_times()
+                        
+                        # Wait until disconnection occurs
+                        await self.lost_connection.wait()
+                        
+                        if not self.finish_up: 
+                            self.logger.log(logging.INFO,'Lost connection to {}'.format(self.device_name))            
+                    else:
+                        self.logger.log(logging.ERROR,"Could not connect to {}".format(self.device_name))
+
+                # Lost connection or could not connect                        
                 sleep_time = 1.0
 
             else: 
@@ -2055,7 +2070,7 @@ class gearVRC:
 
         while not self.finish_up:
 
-            # print('Z', end='', flush=True)
+            print('Z', end='', flush=True)
 
             startTime = time.perf_counter()
 
@@ -2077,7 +2092,7 @@ class gearVRC:
             data_imu.mag  = self.mag
             imu_msgpack = msgpack.packb(obj2dict(vars(data_imu)))
             socket.send_multipart([b"imu", imu_msgpack])               
-            # print('Zimu', end='', flush=True)
+            print('Zimu', end='', flush=True)
 
             data_button.time        = self.sensorTime
             data_button.trigger     = self.trigger
@@ -2091,14 +2106,14 @@ class gearVRC:
             data_button.touchY      = self.touchY
             button_msgpack = msgpack.packb( obj2dict(vars(data_button)))
             socket.send_multipart([b"button",button_msgpack])               
-            # print('Zbutton', end='', flush=True)
+            print('Zbutton', end='', flush=True)
 
             data_touch.time        = self.sensorTime
             data_touch.touchX      = self.touchX
             data_touch.touchY      = self.touchY
             touch_msgpack = msgpack.packb(obj2dict(vars(data_touch)))
             socket.send_multipart([b"touch", touch_msgpack])               
-            # print('Ztouch', end='', flush=True)
+            print('Ztouch', end='', flush=True)
 
             # format the system data
             data_system.temperature    = self.temperature
@@ -2111,7 +2126,7 @@ class gearVRC:
             data_system.reporting_rate = self.report_rate
             system_msgpack = msgpack.packb(obj2dict(vars(data_system)))
             socket.send_multipart([b"system", system_msgpack])               
-            # print('Zsys', end='', flush=True)
+            print('Zsys', end='', flush=True)
 
             if self.args.virtual:
                 
@@ -2133,7 +2148,7 @@ class gearVRC:
                 data_virtual.clockwise = self.clockwise
                 virtual_msgpack = msgpack.packb(obj2dict(vars(data_virtual)))
                 socket.send_multipart([b"virtual", virtual_msgpack])
-                # print('Zvirt', end='', flush=True)
+                print('Zvirt', end='', flush=True)
 
             if self.args.fusion:
 
@@ -2147,7 +2162,7 @@ class gearVRC:
                 data_fusion.q   = self.q
                 fusion_msgpack = msgpack.packb(obj2dict(vars(data_fusion)))
                 socket.send_multipart([b"fusion", fusion_msgpack])   
-                # print('Zfuse', end='', flush=True)
+                print('Zfuse', end='', flush=True)
                 
             if self.args.motion:
                 data_motion.time      = self.sensorTime
@@ -2159,7 +2174,7 @@ class gearVRC:
                 data_motion.dtmotion  = self.dtmotion
                 motion_msgpack = msgpack.packb(obj2dict(vars(data_motion)))
                 socket.send_multipart([b"motion", motion_msgpack])
-                # print('Zmotion', end='', flush=True)
+                print('Zmotion', end='', flush=True)
 
             # update interval
             self.zmq_deltaTime = time.perf_counter() - startTime

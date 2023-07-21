@@ -19,7 +19,7 @@ import msgpack
 
 from pyIMU.quaternion import Vector3D, Quaternion, TWOPI, RAD2DEG
 from pyIMU.utilities import q2rpy, qmag2h, vector_angle2q
-from gearVRC import gearIMUData, gearButtonData, gearFusionData, gearMotionData, obj2dict            
+from archive.gearVRC import gearIMUData, gearButtonData, gearFusionData, gearMotionData, obj2dict            
 from copy import copy
 
 timerResolution = time.get_clock_info('monotonic').resolution

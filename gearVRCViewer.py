@@ -48,7 +48,7 @@ from pywavefront import Wavefront
 from pyglet import image
 
 sys.path.append('..')
-from gearVRC import gearFusionData, gearButtonData, gearMotionData, dict2obj
+from archive.gearVRC import gearFusionData, gearButtonData, gearMotionData, dict2obj
 
 ###################################################################
 # GLOBALS
@@ -93,7 +93,6 @@ class zmqWorker(QObject):
         self.new_fusion = False
         self.new_button = False
         self.new_motion = False
-        self.timedout   = False
         
         context = zmq.Context()
         poller = zmq.Poller()
@@ -153,7 +152,6 @@ class zmqWorker(QObject):
                         self.logger.log(logging.ERROR, 'zmqWorker malformed message')
                 else: # ZMQ TIMEOUT
                     self.logger.log(logging.ERROR, 'zmqWorker timed out')
-                    self.timedout = True
                     poller.unregister(socket)
                     socket.close()
                     socket = context.socket(zmq.SUB)
@@ -162,14 +160,17 @@ class zmqWorker(QObject):
                     socket.setsockopt(zmq.SUBSCRIBE, b"motion")
                     socket.connect(self.zmqPort)
                     poller.register(socket, zmq.POLLIN)
+                    self.new_fusion = False
+                    self.new_button = False
+                    self.new_motion = False
                     
-                if (self.new_fusion and self.new_button and self.new_motion) and not self.timedout:
+                if (self.new_fusion and self.new_button and self.new_motion):
                     if not self.paused:
                         self.dataReady.emit([data_button, data_fusion, data_motion])
                         self.new_fusion = False
                         self.new_button = False
                         self.new_motion = False
-                        self.timedout   = False
+
             except:
                 self.logger.log(logging.ERROR, 'zmqWorker error')
                 poller.unregister(socket)
@@ -180,6 +181,9 @@ class zmqWorker(QObject):
                 socket.setsockopt(zmq.SUBSCRIBE, b"motion")
                 socket.connect(self.zmqPort)
                 poller.register(socket, zmq.POLLIN)
+                self.new_fusion = False
+                self.new_button = False
+                self.new_motion = False
 
         self.logger.log(logging.DEBUG, 'zmqWorker finished')
         socket.close()

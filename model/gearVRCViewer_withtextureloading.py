@@ -38,7 +38,7 @@ from pywavefront import Wavefront
 from pyglet import image
 
 sys.path.append('..')
-from gearVRC import gearFusionData, gearButtonData, gearMotionData, dict2obj
+from archive.gearVRC import gearFusionData, gearButtonData, gearMotionData, dict2obj
 
 DEG2RAD = math.pi / 180.0
 TWOPI  = 2.0 * math.pi
