@@ -15,7 +15,6 @@ import os
 import math
 import asyncio
 import zmq
-# import zmq.asyncio
 import msgpack
 
 from pyIMU.quaternion import Vector3D, Quaternion, TWOPI, RAD2DEG
@@ -67,10 +66,14 @@ class dummyZMQ:
         self.mag           = Vector3D(0.,0.,0.)
         
         self.position      = Vector3D(0.,0.,0.)
-        self.dx = (random.random()*2.-1.)/1000.
-        self.dy = (random.random()*2.-1.)/1000.
-        self.dz = (random.random()*2.-1.)/1000.
-
+        self.dx = (random.random()*2.-1.)
+        self.dy = (random.random()*2.-1.)
+        self.dz = (random.random()*2.-1.)
+        scale = math.sqrt(self.dx*self.dx + self.dy*self.dy + self.dz*self.dz)
+        self.dx /= scale*1000.
+        self.dy /= scale*1000.
+        self.dz /= scale*1000.
+        
     async def update(self):
         '''
         Generate normalized radom IMU data
@@ -99,9 +102,20 @@ class dummyZMQ:
         data_button = gearButtonData()
         data_motion = gearMotionData()
         
+        self.trigger     = False
+        self.touch       = False
+        self.back        = False
+        self.home        = False
+        self.volume_up   = False
+        self.volume_down = False
+        self.noButton    = True
+        self.touchX      = 0
+        self.touchY      = 0
+        
         rot = 0.0
         counter = 0 
-
+        lastButtonTime = time.perf_counter()
+        
         while not self.finish_up:
 
             currentTime = time.perf_counter()
@@ -138,34 +152,37 @@ class dummyZMQ:
             self.gyr *=5.
             self.mag *=40.
 
-            if random.choice([True, False]):
-                self.trigger   = random.choice([True, False])
-                self.touch     = random.choice([True, False])
-                self.back      = random.choice([True, False])
-                self.home      = random.choice([True, False])
-                self.volume_up = random.choice([True, False])
-                self.volume_down = random.choice([True, False])
-                self.noButton  = False
-            else:
-                self.trigger   = False
-                self.touch     = False
-                self.back      = False
-                self.home      = False
-                self.volume_up = False
-                self.volume_down = False
-                self.noButton = True
+            if (time.perf_counter() - lastButtonTime) > 0.5:
+                lastButtonTime = copy(currentTime)
 
-            if random.choice([True, False]):
-                radius =  315/2
-                angle = random.uniform(0, 2 * math.pi)
-                distance = random.uniform(0, radius)
-                x = radius + distance * math.cos(angle)
-                y = radius + distance * math.sin(angle)
-                self.touchX = int(x)
-                self.touchY = int(y)
-            else:
-                self.touchX = 0
-                self.touchY = 0
+                if random.choice([True, False]):
+                    self.trigger   = random.choice([True, False])
+                    self.touch     = random.choice([True, False])
+                    self.back      = random.choice([True, False])
+                    self.home      = random.choice([True, False])
+                    self.volume_up = random.choice([True, False])
+                    self.volume_down = random.choice([True, False])
+                    self.noButton  = False
+                else:
+                    self.trigger     = False
+                    self.touch       = False
+                    self.back        = False
+                    self.home        = False
+                    self.volume_up   = False
+                    self.volume_down = False
+                    self.noButton    = True
+
+                if random.choice([True, False]):
+                    radius =  315/2
+                    angle = random.uniform(0, 2 * math.pi)
+                    distance = random.uniform(0, radius)
+                    x = radius + distance * math.cos(angle)
+                    y = radius + distance * math.sin(angle)
+                    self.touchX = int(x)
+                    self.touchY = int(y)
+                else:
+                    self.touchX = 0
+                    self.touchY = 0
 
             rot = rot + 0.01
             if rot > 2. * math.pi: rot = 0.
@@ -182,7 +199,7 @@ class dummyZMQ:
                 self.dy = -self.dy
                 self.dz = -self.dz
                 
-            self.position     += Vector3D(self.dx,self.dy,self.dz)
+            self.position    += Vector3D(self.dx,self.dy,self.dz)
             self.velocity     = Vector3D(0.,0.,0.)
             self.residuals    = Vector3D(0.,0.,0.)
             self.dtmotion     = 0.1
@@ -193,7 +210,7 @@ class dummyZMQ:
             previous_zmqUpdate = copy(currentTime)
 
             zmq_updateCounts += 1
-            if (currentTime - zmq_lastTimeRate)>= 1.:
+            if (currentTime - zmq_lastTimeRate) >= 1.:
                 self.zmq_rate = copy(zmq_updateCounts)
                 zmq_lastTimeRate = copy(currentTime)
                 zmq_updateCounts = 0
@@ -254,7 +271,7 @@ class dummyZMQ:
                     previous_reportUpdate = copy(currentTime)
 
                     report_updateCounts += 1
-                    if (currentTime - report_lastTimeRate)>= 1.:
+                    if (currentTime - report_lastTimeRate) >= 1.:
                         self.report_rate = copy(report_updateCounts)
                         report_lastTimeRate = copy(currentTime)
                         report_updateCounts = 0

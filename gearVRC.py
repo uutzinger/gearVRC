@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 
 ################################################################
-# Samung gearVR Controller
+# Samsung gearVR Controller
 ################################################################
 # This work is based on:
 # Gear VRC reverse engineering (Java): 
@@ -358,7 +358,7 @@ class gearButtonData(object):
     def __init__(self, 
                  time: float=0.0,
                  trigger: bool = False, touch: bool = False, back: bool = False, home: bool = False, 
-                 volume_up: bool = False, volume_down: bool = False, noButton: bool = False,
+                 volume_up: bool = False, volume_down: bool = False, noButton: bool = True,
                  touchX: int = 0, touchY: int = 0) -> None:
         self.time           = time
         self.trigger        = trigger
@@ -438,7 +438,7 @@ class gearMotionData(object):
             self.dtmotion     = dtmotion
             self.accBias      = accBias
             self.velocityBias = velocityBias
-            
+        
 #########################################################################################################
 # gearVRC 
 #########################################################################################################
@@ -689,10 +689,12 @@ class gearVRC:
 
         # Motion
         self.Motion        = Motion()
-        self.acceleration  = Vector3D(0.,0.,0.)
+        self.residuals     = Vector3D(0.,0.,0.)
         self.velocity      = Vector3D(0.,0.,0.)
         self.position      = Vector3D(0.,0.,0.)
-            
+        self.dtmotion      = 0.
+        self.accBias       = Vector3D(0.,0.,0.)
+        self.velocityBias  = Vector3D(0.,0.,0.)
 
     def handle_disconnect(self,client):
         self.logger.log(logging.INFO,'Client disconnected, Signaling...')
@@ -1161,7 +1163,7 @@ class gearVRC:
          The wheel is touched when finger slides along the rim of the touchpad
          The virtual touchpad is updated when the finger slides on the touchpad
         '''        
-        if not (self.touchX == 0 and self.touchY==0): 
+        if not (self.touchX == 0 and self.touchY == 0): 
 
             # Virtual Wheel
             #  Detects if rim of touchpad is touched and at what position 0..63
@@ -1306,8 +1308,16 @@ class gearVRC:
 
         self.rpy=q2rpy(q=self.q)
         self.heading = rpymag2h(rpy=self.rpy, mag=self.mag_cal, declination=DECLINATION)
-        
-        
+
+    def compute_motion(self):
+        self.Motion.update(q=self.q, acc=self.acc_cal, motion=self.motion, timestamp=self.sensorTime)
+        self.residuals    = self.Motion.worldResiduals
+        self.velocity     = self.Motion.worldVelocity
+        self.position     = self.Motion.worldPosition
+        self.dtmotion     = self.Motion.dtmotion
+        self.accBias      = self.Motion.residuals_bias
+        self.velocityBias = self.Motion.worldVelocity_drift
+                    
     def check_ESC_sequence(self):
         '''
         Was the home button pressed the necessary amount of times within the timeout?
@@ -1872,8 +1882,17 @@ class gearVRC:
                     
                     msg_out+= 'Using Mag in AHRS: {}\n'.format('Y' if self.magok else 'N')
 
+                if self.args.motion:
+                    msg_out+= '-------------------------------------------------\n'
 
- 
+                    msg_out+= 'Residual {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.residuals.x,self.residuals.y,self.residuals.z,self.residuals.norm)
+                    msg_out+= 'Vel      {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.velocity.x,self.velocity.y,self.velocity.z,self.velocity.norm)
+                    msg_out+= 'Pos      {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.position.x,self.position.y,self.position.z,self.position.norm)
+                    msg_out+= 'Vel Bias {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.velocityBias.x,self.velocityBias.y,self.velocityBias.z,self.velocityBias.norm)
+                    msg_out+= 'Acc Bias {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.accBias.x,self.accBias.y,self.accBias.z,self.accBias.norm)
+                    msg_out+= 'dt       {:>10.6f}\n'.format(self.dtmotion)
+
+
             print(msg_out, flush=True)
 
             self.report_deltaTime = time.perf_counter() - startTime
@@ -1990,6 +2009,7 @@ class gearVRC:
         data_touch   = gearTouchData()
         data_virtual = gearVirtualData()
         data_fusion  = gearFusionData()
+        data_motion  = gearMotionData()
 
         self.zmq_lastTimeRate   = time.perf_counter()
         self.zmq_updateCounts   = 0
@@ -2091,7 +2111,19 @@ class gearVRC:
                 
                 dict_fusion    = obj2dict(vars(data_fusion))
                 fusion_msgpack = msgpack.packb(dict_fusion)
-                socket.send_multipart([b"fusion", fusion_msgpack])               
+                socket.send_multipart([b"fusion", fusion_msgpack])   
+                
+            if self.args.motion:
+                data_motion.residuals = self.residuals
+                data_motion.velocity  = self.velocity
+                data_motion.position  = self.position
+                data_motion.dtmotion  = self.dtmotion
+                data_motion.accBias   = self.accBias
+                data_motion.velocityBias = self.velocityBias
+
+                dict_motion    = obj2dict(vars(data_motion))
+                motion_msgpack = msgpack.packb(dict_motion)
+                socket.send_multipart([b"motion", motion_msgpack])   
 
             # update interval
             self.zmq_deltaTime = time.perf_counter() - startTime
@@ -2262,7 +2294,7 @@ if __name__ == '__main__':
         '--motion',
         dest = 'motion',
         action='store_true',
-        help='turns on IMU motion module',
+        help='turns on velocity and position computation',
         default = False
     )
 
