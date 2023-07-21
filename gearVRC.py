@@ -432,6 +432,7 @@ class gearMotionData(object):
                  accBias:      Vector3D = Vector3D(0.,0.,0.), 
                  velocityBias: Vector3D = Vector3D(0.,0.,0.), 
                  dtmotion:     float = 0.0) -> None:
+            self.time         = time
             self.residuals    = residuals
             self.velocity     = velocity
             self.position     = position
@@ -2053,7 +2054,7 @@ class gearVRC:
 
         while not self.finish_up:
 
-            # print('Z', end='', flush=True)
+            print('Z', end='', flush=True)
 
             startTime = time.perf_counter()
 
@@ -2073,10 +2074,9 @@ class gearVRC:
             data_imu.acc  = self.acc
             data_imu.gyr  = self.gyr
             data_imu.mag  = self.mag
-
-            dict_imu    = obj2dict(vars(data_imu))
-            imu_msgpack = msgpack.packb(dict_imu)
+            imu_msgpack = msgpack.packb(obj2dict(vars(data_imu)))
             socket.send_multipart([b"imu", imu_msgpack])               
+            print('Zimu', end='', flush=True)
 
             data_button.time        = self.sensorTime
             data_button.trigger     = self.trigger
@@ -2086,18 +2086,18 @@ class gearVRC:
             data_button.volume_up   = self.volume_up
             data_button.volume_down = self.volume_down
             data_button.noButton    = self.noButton
-
-            dict_button    = obj2dict(vars(data_button))
-            button_msgpack = msgpack.packb(dict_button)
+            data_button.touchX      = self.touchX
+            data_button.touchY      = self.touchY
+            button_msgpack = msgpack.packb( obj2dict(vars(data_button)))
             socket.send_multipart([b"button",button_msgpack])               
+            print('Zbutton', end='', flush=True)
 
             data_touch.time        = self.sensorTime
             data_touch.touchX      = self.touchX
             data_touch.touchY      = self.touchY
-
-            dict_touch    = obj2dict(vars(data_touch))
-            touch_msgpack = msgpack.packb(dict_touch)
+            touch_msgpack = msgpack.packb(obj2dict(vars(data_touch)))
             socket.send_multipart([b"touch", touch_msgpack])               
+            print('Ztouch', end='', flush=True)
 
             # format the system data
             data_system.temperature    = self.temperature
@@ -2108,10 +2108,9 @@ class gearVRC:
             data_system.zmq_rate       = self.zmq_rate
             data_system.serial_rate    = self.serial_rate
             data_system.reporting_rate = self.report_rate
-
-            dict_system    = obj2dict(vars(data_system))
-            system_msgpack = msgpack.packb(dict_system)
+            system_msgpack = msgpack.packb(obj2dict(vars(data_system)))
             socket.send_multipart([b"system", system_msgpack])               
+            print('Zsys', end='', flush=True)
 
             if self.args.virtual:
                 
@@ -2131,36 +2130,35 @@ class gearVRC:
                 data_virtual.center = self.center
                 data_virtual.isRotating = self.isRotating
                 data_virtual.clockwise = self.clockwise
-        
-                dict_virtual    = obj2dict(vars(data_virtual))
-                virtual_msgpack = msgpack.packb(dict_virtual)
-                socket.send_multipart([b"virtual", virtual_msgpack])          
+                virtual_msgpack = msgpack.packb(obj2dict(vars(data_virtual)))
+                socket.send_multipart([b"virtual", virtual_msgpack])
+                print('Zvirt', end='', flush=True)
 
             if self.args.fusion:
 
                 # report fusion data
-                data_fusion.acc = self.acc_cal
-                data_fusion.gyr = self.gyr_cal
-                data_fusion.mag = self.mag_cal
-                data_fusion.rpy = self.rpy
+                data_fusion.time = self.sensorTime
+                data_fusion.acc  = self.acc_cal
+                data_fusion.gyr  = self.gyr_cal
+                data_fusion.mag  = self.mag_cal
+                data_fusion.rpy  = self.rpy
                 data_fusion.heading = self.heading
                 data_fusion.q   = self.q
-                
-                dict_fusion    = obj2dict(vars(data_fusion))
-                fusion_msgpack = msgpack.packb(dict_fusion)
+                fusion_msgpack = msgpack.packb(obj2dict(vars(data_fusion)))
                 socket.send_multipart([b"fusion", fusion_msgpack])   
+                print('Zfuse', end='', flush=True)
                 
             if self.args.motion:
-                data_motion.residuals = self.residuals
-                data_motion.velocity  = self.velocity
-                data_motion.position  = self.position
-                data_motion.dtmotion  = self.dtmotion
+                data_motion.time      = self.sensorTime
                 data_motion.accBias   = self.accBias
                 data_motion.velocityBias = self.velocityBias
-
-                dict_motion    = obj2dict(vars(data_motion))
-                motion_msgpack = msgpack.packb(dict_motion)
-                socket.send_multipart([b"motion", motion_msgpack])   
+                data_motion.position  = self.position
+                data_motion.velocity  = self.velocity
+                data_motion.residuals = self.residuals
+                data_motion.dtmotion  = self.dtmotion
+                motion_msgpack = msgpack.packb(obj2dict(vars(data_motion)))
+                socket.send_multipart([b"motion", motion_msgpack])
+                print('Zmotion', end='', flush=True)
 
             # update interval
             self.zmq_deltaTime = time.perf_counter() - startTime

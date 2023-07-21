@@ -78,6 +78,7 @@ class zmqWorker(QObject):
 
         self.new_fusion = False
         self.new_button = False
+        self.new_motion = False
         self.timeout    = False
         
         self.zmqTimeout = ZMQTIMEOUT 
@@ -89,10 +90,10 @@ class zmqWorker(QObject):
         self.running = True
         self.paused  = False
 
-        new_fusion = False
-        new_button = False
-        new_motion = False
-        timeout    = False
+        self.new_fusion = False
+        self.new_button = False
+        self.new_motion = False
+        self.timedout   = False
         
         context = zmq.Context()
         socket = context.socket(zmq.SUB)
@@ -103,7 +104,7 @@ class zmqWorker(QObject):
         poller = zmq.Poller()
         poller.register(socket, zmq.POLLIN)
 
-        self.logger.log(logging.INFO, 'zmqWorker started'  )
+        self.logger.log(logging.INFO, 'zmqWorker started on {}'.format(self.zmqPort))
                 
         while self.running:
             events = dict(poller.poll(timeout = self.zmqTimeout))
@@ -118,8 +119,8 @@ class zmqWorker(QObject):
                            hasattr(data_fusion, 'rpy') and \
                            hasattr(data_fusion, 'heading') and\
                            hasattr(data_fusion, 'time'):
-                            new_fusion = True
-                    if topic == b"button":
+                            self.new_fusion = True
+                    elif topic == b"button":
                         msg_dict = msgpack.unpackb(msg_packed)
                         data_button = dict2obj(msg_dict)
                         if hasattr(data_button, 'trigger') and \
@@ -132,8 +133,8 @@ class zmqWorker(QObject):
                            hasattr(data_button, 'touchX') and \
                            hasattr(data_button, 'touchY') and\
                            hasattr(data_button, 'time'):
-                            new_button = True
-                    if topic == b"motion":
+                            self.new_button = True
+                    elif topic == b"motion":
                         msg_dict = msgpack.unpackb(msg_packed)
                         data_motion = dict2obj(msg_dict)
                         if hasattr(data_motion, 'time') and \
@@ -143,22 +144,25 @@ class zmqWorker(QObject):
                            hasattr(data_motion, 'accBias') and \
                            hasattr(data_motion, 'velocityBias') and \
                            hasattr(data_motion, 'dtmotion'):
-                            new_motion = True            
+                            self.new_motion = True            
                     else:
                         pass # not a topic we need
                 else:
-                    pass # got malformed message
+                    self.logger.log(logging.DEBUG, 'zmqWorker malformed message')
             else: # ZMQ TIMEOUT
-                timeout = True
-
-            if (new_fusion and new_button and new_motion) and not timeout:
+                self.logger.log(logging.DEBUG, 'zmqWorker timed out')
+                self.timedout = True
+                socket.connect(self.zmqPort)
+                
+            if (self.new_fusion and self.new_button and self.new_motion) and not self.timedout:
                 if not self.paused:
                     self.dataReady.emit([data_button, data_fusion, data_motion])
-                    new_fusion = False
-                    new_button = False
-                    new_motion = False
-                    timeout    = False
+                    self.new_fusion = False
+                    self.new_button = False
+                    self.new_motion = False
+                    self.timedout   = False
 
+        self.logger.log(logging.DEBUG, 'zmqWorker finished')
         socket.close()
         context.term()
         self.finished.emit()
@@ -577,12 +581,11 @@ class MainWindow(QMainWindow):
 
         self.zmqWorkerThread.started.connect(self.zmqWorker.start)
         self.zmqWorkerThread.finished.connect(self.worker_thread_finished)
-
-        self.zmqWorker.set_zmqPort(self.zmqPort)
+        self.zmqWorker.set_zmqPort(args.zmqport)
 
         self.zmqWorkerThread.start()
 
-        self.logger.log(logging.INFO, 'Main initialized with port: {}'.format(self.zmqPort)  )
+        self.logger.log(logging.INFO, 'Main initialized with port: {}'.format(args.zmqport)  )
     ###################################################################
     # Start Worker
     ###################################################################
@@ -611,7 +614,7 @@ if __name__ == '__main__':
         type = str,
         metavar='<zmqport>',
         help='port used by ZMQ, tcp://UrsPi:5556',
-        default = 'tcp://localhost:5556'
+        default = "tcp://UrsPi:5556"
     ) 
 
     parser.add_argument(
