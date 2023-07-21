@@ -697,6 +697,9 @@ class gearVRC:
         self.accBias       = Vector3D(0.,0.,0.)
         self.velocityBias  = Vector3D(0.,0.,0.)
 
+        # First Time Getting Data
+        self.firstTimeData     = True
+
     def update_times(self):
         self.home_pressedTime       = time.perf_counter()
         self.data_lastTime          = time.perf_counter()
@@ -1167,8 +1170,14 @@ class gearVRC:
         self.gyr = Vector3D( self.gyrY,  self.gyrX, -self.gyrZ)
         self.mag = Vector3D(-self.magX,  self.magY,  self.magZ)
 
-        self.gyr_average = 0.99*self.gyr_average + 0.01*self.gyr
-        self.acc_average = 0.99*self.acc_average + 0.01*self.acc
+        if self.firstTimeData:
+            self.firstTimeData = False        
+            self.gyr_average = self.gyr
+            self.acc_average = self.acc
+        else:
+            self.gyr_average = 0.99*self.gyr_average + 0.01*self.gyr
+            self.acc_average = 0.99*self.acc_average + 0.01*self.acc
+
         self.moving = detectMotion(self.acc.norm, self.gyr.norm, self.acc_average.norm, self.gyr_average.norm)
         if not self.moving:
             self.gyr_offset = 0.99*self.gyr_offset + 0.01*self.gyr
@@ -1503,7 +1512,7 @@ class gearVRC:
                     self.motion_rate = copy(self.motion_updateCounts)
                     self.motion_lastTimeRate = copy(startTime)
                     self.motion_updateCounts = 0
-                    self.motionDelayCount += 1
+                    
                 # we need some time to compute averages, once system is stable start compute motion.
                 if start_motionUpdate - self.firstTimeMotion > 5.0:
                     self.compute_motion()
