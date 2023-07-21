@@ -604,6 +604,7 @@ class gearVRC:
         self.motion_updateCounts    = 0
         self.motion_lastTimeRate    = time.perf_counter()
         self.previous_motionTime    = time.perf_counter()
+        self.firstTimeMotion        = time.perf_counter()
 
         self.report_deltaTime       = 0.
         self.report_rate            = 0
@@ -688,7 +689,7 @@ class gearVRC:
         self.magok         = False
 
         # Motion
-        self.Motion        = Motion()
+        self.Position      = Motion()
         self.residuals     = Vector3D(0.,0.,0.)
         self.velocity      = Vector3D(0.,0.,0.)
         self.position      = Vector3D(0.,0.,0.)
@@ -1310,13 +1311,13 @@ class gearVRC:
         self.heading = rpymag2h(rpy=self.rpy, mag=self.mag_cal, declination=DECLINATION)
 
     def compute_motion(self):
-        self.Motion.update(q=self.q, acc=self.acc_cal, motion=self.motion, timestamp=self.sensorTime)
-        self.residuals    = self.Motion.worldResiduals
-        self.velocity     = self.Motion.worldVelocity
-        self.position     = self.Motion.worldPosition
-        self.dtmotion     = self.Motion.dtmotion
-        self.accBias      = self.Motion.residuals_bias
-        self.velocityBias = self.Motion.worldVelocity_drift
+        self.Position.update(q=self.q, acc=self.acc_cal, moving=self.moving, timestamp=self.sensorTime)
+        self.residuals    = self.Position.worldResiduals
+        self.velocity     = self.Position.worldVelocity
+        self.position     = self.Position.worldPosition
+        self.dtmotion     = self.Position.dtmotion
+        self.accBias      = self.Position.residuals_bias
+        self.velocityBias = self.Position.worldVelocity_drift
                     
     def check_ESC_sequence(self):
         '''
@@ -1485,8 +1486,11 @@ class gearVRC:
                     self.motion_rate = copy(self.motion_updateCounts)
                     self.motion_lastTimeRate = copy(startTime)
                     self.motion_updateCounts = 0
-                #
-                self.compute_motion()
+                    self.motionDelayCount += 1
+                # we need some time to compute averages, once system is stable start compute motion.
+                if start_motionUpdate - self.firstTimeMotion > 5.0:
+                    self.compute_motion()
+
                 self.motion_deltaTime = time.perf_counter() - start_motionUpdate
 
         else:
@@ -2277,7 +2281,7 @@ if __name__ == '__main__':
         type = int,
         metavar='<report>',
         help='report level: 0(None), 1(Rate only), 2(Regular)',
-        default = 0
+        default = 2
     )
 
     parser.add_argument(
@@ -2295,7 +2299,7 @@ if __name__ == '__main__':
         dest = 'motion',
         action='store_true',
         help='turns on velocity and position computation',
-        default = False
+        default = True
     )
 
     parser.add_argument(
@@ -2357,6 +2361,8 @@ if __name__ == '__main__':
     )
 
     args = parser.parse_args()
+
+    if args.motion: args.fusion=True
         
     log_level = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(
