@@ -392,7 +392,7 @@ class GLWidget(QOpenGLWidget):
             self.textureHeight = texture.image.height
             self.textureID     = texture.image.id
                 
-            glEnable(texture.image.target)
+            glEnable(texture.image.target) # This is 3553 and same as GL_TEXTURE_2D
             glBindTexture(texture.image.target, texture.image.id)
             if texture.options.clamp == "on":
                 glTexParameterf(texture.image.target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)

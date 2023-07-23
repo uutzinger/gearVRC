@@ -1,22 +1,38 @@
-# gearVRC
+# gearVRC 
 
-Samsung Gear VR Controller client implementation in python.
+**gearVRC.py** Samsung Gear VR Controller client implementation in python .
 
-This implementation uses bleak for BLE communication.
+This client reads
+- buttons
+- touchpad
+- accelerometer
+- gyroscope
+- magnetometer
 
-The gearVR Controller disconnects after inactivity. Usually a short press on the Home key will reconnect it. Disconnection occurs regardless wether you send keep alive commands to the device. Disconnection also occurs when the device is just moved around. If buttons were pushed regularly the device might not disconnect.
+and uses **AHRS** to fuse the data into a pose. The convention I use is x points forward, y points to the east and z down.
 
-Using gear VR Controller on Windows is cumbersome as one needs to remove the device from the system each time before using it. After inactivity disconnection one needs to also remove the device. If this process can be automated, the controller might be usable on Windows also.
+The software provides a virtual wheel implementation: when sliding a finger along the rim of the touchpad the rotation direction and position is calculated.
 
-gearVR Controller runs on Raspian but might cause issues when it disconnects because of a signal loss. In this implementation, when you press the Home button three times within 2 seconds, the programs exits.
+**gearVRCViewer.py** renders the controller with OpenGL and illustrates itd current pose and user activity.
 
-gearVRC Controller can enter into a pairing stage that it will remain in and refuse any pairing attempts from Raspian or Windows. On Raspian, a system reboot might help. On Windows you need to remove the device so that the OS has no prior knowledge of the controller.
+# Table of Contents
 
-If you are stuck, attempt unpairing and removing device in bluetoothctl. Remove battery from gear VR Controller, reboot the system and try fresh again until the entry in bluetoothctl matches the one listed below.
+- [gearVRC](#gearvrc)
+- [Table of Contents](#table-of-contents)
+  * [Usage](#usage)
+  * [bleak Issues](#bleak-issues)
+  * [Behaviors of the gearVR Controller](#behaviors-of-the-gearvr-controller)
+  * [gearVRCViewer](#gearvrcviewer)
+    + [Serial](#serial)
+    + [ZMQ](#zmq)
+  * [Installation](#installation)
+  * [Prerequisites](#prerequisites)
+    + [Windows](#windows)
+    + [Unix](#unix)
+    + [Calibration](#calibration)
+  * [pyIMU](#pyimu)
 
-At this time I do not know how to automate the solution for a system that no longer pairs with the controller.
-
-The update rate from the controller is between 45 and 72 Hz. If you restart the program it will switch in between those two numbers. It is not yet clear to me how to make sure we always get the same update rate.
+<small><i><a href='http://ecotrust-canada.github.io/markdown-toc/'>Table of contents generated with markdown-toc</a></i></small>
 
 ## Usage
 gearVRC.py has the following options
@@ -33,7 +49,7 @@ gearVRC.py has the following options
                         report level: 0(None), 1(Rate only), 2(Regular)
   -f, --fusion          turns on IMU data fusion
   -v, --virtual         turns on virtual wheel and touchpad
-  -m, --motion			attempts calculating velocity and postion
+  -m, --motion			attempts calculating velocity and position
   -s <serial>, --serial <serial>
                         serial port for reporting, e.g '/tmp/ttyV0' when you
                         are using virtual ports 'socat -d -d
@@ -61,11 +77,32 @@ gearVRC.py has the following options
 - ```-b``` us baudrate with default of 115200
 - ```-z``` for ZMQ data announcement
 
-## gearVRCViewer
-There is both a dummyZMQsender which simulates gearVRC and a gearVRCViewer which display the gearVRC device on the screen and applies the rotation and position. Showing button presses and touchpad is not yet implemented.
+## bleak Issues
+This implementation uses **bleak** for BLE communication. 
 
-### Serial
-You can start virtual serial ports with null modem connection between the two ports:
+**bleak** expects a confirmation reply after a device is connected and some devices do not conform with this BLE specs. For gearVRC to work well you need to edit the bleak client code in the bluezdbus backend and change ```assert reply is not None``` to ```if reply is not None:``` and indent the code until the line before ```assert_reply(reply).
+
+## Behaviors of the gearVR Controller  
+
+The gearVR Controller **disconnects** after **inactivity**. A short press on the Home key will reconnect it. Disconnection occurs regardless wether you send keep alive commands to the device or not. Disconnection also occurs when the device is just moved around. If buttons are pushed regularly the device does not disconnect.
+
+Using gear VR Controller on **Windows** is **cumbersome** as one needs to remove the device from the system each time before using it. After inactivity disconnection, one needs to also remove the device. If this process can be automated, the controller might be usable on Windows also.
+
+In this implementation, when you press the Home button three times within 2 seconds, the program exits.
+
+**gearVRC Controller** can enter into a **pairing stage** that it will remain in and **refuse any pairing** attempts from Raspian or Windows. On Raspian, a system reboot helps. On Windows you need to remove the device so that the OS has no prior knowledge of the controller. On some Windows system bluetooth devices appear in the list and after removal the list is not cleared.
+
+If you are stuck, attempt unpairing and removing device in bluetoothctl. Remove battery from gear VR Controller, reboot the system and try fresh again until the entry in bluetoothctl matches the one listed below.
+
+The update rate from the controller is between **45 and 72 Hz**. If you restart the program it will switch in between those two numbers. It is not yet clear to me how to make sure we always get the same update rate. Since I use asyncio to signal to the ZMQ task that new data is available, the ZMQ update rate is slower than the fusion rate. This is due to the system timer resolution. If you need full data rate you need to move the ZMQ handling to the data notification routine.
+
+The gearVRC sensors does not provide accurate data during the first couple readings after the system boots. You should not use that data for AHRS data fusion because both magnetometer and accelerometer are affected and AHRS makes an initial guess of its pose from the first reading.
+
+## gearVRCViewer
+This package also includes a gearVRC Viewer which used a 3D model to render the device in OpenGL **gearVRCViewer.py**. The viewer can be run on an other computer as it connects to the client via **ZMQ**. To simulate the gearVRC you can run the **dummyZMQsender.py** and connect to localhost.
+
+## Serial
+You can start virtual serial ports with null modem connection between the two ports to transmit data between the client and a listener:
 
 ```
 socat -d -d pty,rawer,echo=0,link=/tmp/ttyV0 pty,rawer,echo=0,link=/tmp/ttyV1
@@ -83,9 +120,9 @@ and open serial port ```/tmp/ttyV1``` with baurate of ```115200```
 
 In Putty you can type ```v``` followed by ```CTRL-J``` and response should be VRC version string.
 
-You can type ```b10``` followed by ```CTRL-J``` and 10 lines of hex encoded acc,gyr,mag data should appear in terminal
+You can type ```b10``` followed by ```CTRL-J``` and 10 lines of hex encoded acc,gyr,mag data should appear in terminal. Routines to decode and encode hex are in gearVRC.py.
 
-### ZMQ
+## ZMQ
 When starting ZMQ with ```-z 5556``` you will have ```tcp://localhost:5556``` available to listen to ZMQ messages.
 
 There are 6 message types emitted as multi part message. You can subscribe to any of them:
@@ -97,7 +134,8 @@ There are 6 message types emitted as multi part message. You can subscribe to an
 - ```fusion```
 
 That data within the messages is serialized to binary with messagepack.
-Routines needed to decode that data and create python object out of them is provided.
+
+Routines needed to decode that data and create python object out of them are provided.
 
 system message contains:
 ```
@@ -128,6 +166,8 @@ button message contains:
 	data.volume_up
 	data.volume_down
 	data.noButton
+	data.touchX
+	data.touchY
 ```
 
 touch pad message contains
@@ -168,10 +208,10 @@ fusion Message contains
 ```
 ## Installation
 
-Download the archive and `'pip3 install .'`  . You can also add the `-e` switch to create a link to a local folder.
+Download the archive and `'pip3 install .'`  . You can also add the `-e` switch to create a link to the local folder.
 
 ## Prerequisites
-You will either need to install bleak or gatt: e.g. `pip install bleak`
+You will either need to install bleak: `pip install bleak`
 
 This software uses
 - asyncio
@@ -193,10 +233,12 @@ You can use BLE Console from https://github.com/sensboston/BLEConsole
 to test the sensor connection without using the provided programs.
 
 ### Unix
-On Unix use the `bluetoothctl` command line tool. Executing the `info` command will need to provide the following output:
+On Unix use the `bluetoothctl` command line tool. Executing the `info` command below will need to provide the following output:
 
 ```
 [bluetooth]# info 2C:BA:BA:2E:17:DB
+```
+```
 Device 2C:BA:BA:2E:17:DB (public)
 	Name: Gear VR Controller(17DB)
 	Alias: Gear VR Controller(17DB)
@@ -222,7 +264,7 @@ Device 2C:BA:BA:2E:17:DB (public)
   00                                               . 
 ```
 
-This state can be created with bluetoothctl but try:
+This state can be created with bluetoothctl. Try:
 - power on
 - pairable on
 - scan on
@@ -230,7 +272,7 @@ This state can be created with bluetoothctl but try:
 After gearVRC appears on 2C:BA:BA:2E:17:DB
 - info 2C:BA:BA:2E:17:DB
 
-This should create reponse:\
+should create reponse:\
 ``` 
 Device 2C:BA:BA:2E:17:DB (public)
 	Name: Gear VR Controller(17DB)
@@ -265,18 +307,20 @@ Then
 
 After pairing succeeded the device is connected. Accept the pop ups appearing on the desktop. The ones without user input buttons you need to close. 
 
-Since the device is connected now you will need to `disconnect 2C:BA:BA:2E:17:DB` because: 
+Since the device is now connected, you will need to `disconnect 2C:BA:BA:2E:17:DB` because: 
 
 ***You can not run this software if bluetoothctl or any other device is already connected to the gearVR Controller!***
 
 A module was added that detects wether the gearVR Controller is already connected in the system. It runs bluetoothctl info command and executes disconnect command if necessary. Bluetoothctl is not available on Windows.
 
-### Calibration
+## Calibration
+For AHRS, calibration data is expected that ensures proper offset and scaling of the sensor measurements. These calibration data are specific for each sensor but one can also set offset to 0 and scales to 1 in the provided json files.
+
 For calibration please check freeIMUCal in my repositories.
 The magnetometer is unusable without calibration. If you just need the touchpad and input keys, no calibration is needed. 
 The gyroscope has drift and the code attempts detecting when the device does not move and calibrates for the drift while it runs.
 
 ## pyIMU
-pyIMU is used to fuse IMU sensor data and calculates the device pose. The pose is best understood qw Roll Pitch and Yaw terms but its internally computed using quaternions.
+pyIMU is used to fuse IMU sensor data and calculates the device pose. The pose is best understood in Roll Pitch and Yaw terms but its internally computed using quaternions. 
 
-Using pyIMU it is possible to calculate acceleration and velocity of the controller. That feature not tested yet.
+Using pyIMU it is possible to calculate acceleration and velocity of the controller. The accuracy is insufficient to estimate the position.
