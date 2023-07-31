@@ -11,8 +11,8 @@ This is an implementation of a client for Samsung gear Virtual Reality Controlle
 
 and fuses that IMU data to a pose.
 
-Included is an Viewer that can be subscribe to the client over the network and display
-realistic rendering of the the controller including highlighting the user interactions
+Included is an Viewer that can subscribe to the client over the network and display
+a realistic rendering of the the controller including highlighting the user interactions
 with the controller.
 
 <img src="./assets/gearVRCviewer.jpg" alt="gearVRC Viewer" width="400" height="321">
@@ -22,7 +22,7 @@ Instructions for the client: [gearVR Controller](./READMEclient.md)
 Instructions for viewer: [gear VR Controller Viewer](./READMEviewer.md)
 
 ## Hardware
-The Samsung gear Virtual Reality hardware is no longer produced but the controller can still be purchased on [Amazon](https://a.co/d/3ZQBLsD) and eBay. It is the least expensive VR Controller that fits in your pocket. It features a track pad and IMU as well as several input buttons and in general is of good quality.
+The Samsung gear Virtual Reality hardware is no longer produced but the controller can still be purchased on [Amazon](https://a.co/d/3ZQBLsD) and eBay. It is the least expensive controller that fits in your pocket. It features a track pad and IMU as well as several input buttons and in general is of high quality. It is a good device to control motors, robots or any other systems. It has a decent battery life, however it can not be recharged over USB.
 
 ## Pre Requisits
 This software depends on several python packages:
