@@ -152,44 +152,55 @@ class dummyZMQ:
             self.gyr *=5.
             self.mag *=40.
 
-            if (time.perf_counter() - lastButtonTime) > 0.5:
-                lastButtonTime = copy(currentTime)
+            if not args.static:
+                if (time.perf_counter() - lastButtonTime) > 0.5:
+                    lastButtonTime = copy(currentTime)
 
-                if random.choice([True, False]):
-                    self.trigger   = random.choice([True, False])
-                    self.touch     = random.choice([True, False])
-                    self.back      = random.choice([True, False])
-                    self.home      = random.choice([True, False])
-                    self.volume_up = random.choice([True, False])
-                    self.volume_down = random.choice([True, False])
-                    self.noButton  = False
-                else:
-                    self.trigger     = False
-                    self.touch       = False
-                    self.back        = False
-                    self.home        = False
-                    self.volume_up   = False
-                    self.volume_down = False
-                    self.noButton    = True
+                    if random.choice([True, False]):
+                        self.trigger   = random.choice([True, False])
+                        self.touch     = random.choice([True, False])
+                        self.back      = random.choice([True, False])
+                        self.home      = random.choice([True, False])
+                        self.volume_up = random.choice([True, False])
+                        self.volume_down = random.choice([True, False])
+                        self.noButton  = False
+                    else:
+                        self.trigger     = False
+                        self.touch       = False
+                        self.back        = False
+                        self.home        = False
+                        self.volume_up   = False
+                        self.volume_down = False
+                        self.noButton    = True
 
-                if random.choice([True, False]):
-                    radius =  315/2
-                    angle = random.uniform(0, 2 * math.pi)
-                    distance = random.uniform(0, radius)
-                    x = radius + distance * math.cos(angle)
-                    y = radius + distance * math.sin(angle)
-                    self.touchX = int(x)
-                    self.touchY = int(y)
-                else:
-                    self.touchX = 0
-                    self.touchY = 0
+                    if random.choice([True, True]): # if random.choice([True, False]):
+                        radius =  315/2
+                        angle = random.uniform(0, 2 * math.pi)
+                        distance = random.uniform(0, radius)
+                        x = radius + distance * math.cos(angle)
+                        y = radius + distance * math.sin(angle)
+                        self.touchX = int(x)
+                        self.touchY = int(y)
+                    else:
+                        self.touchX = 0
+                        self.touchY = 0
+            else:
+                # static turn on all buttons and touchpad center
+                self.trigger     = True
+                self.touch       = False
+                self.back        = True
+                self.home        = True
+                self.volume_up   = True
+                self.volume_down = True
+                self.noButton    = False
+                self.touchX      = 315 // 2
+                self.touchY      = 315 // 2
 
             rot = rot + 0.01
             if rot > 2. * math.pi: rot = 0.
-            self.q=vector_angle2q(vec=Vector3D(1.,0.,1.), angle=rot)
+            self.q=vector_angle2q(vec=Vector3D(-1.,1.,1.), angle=rot)
             self.rpy      = q2rpy(self.q)
             self.heading  = qmag2h(self.q, self.mag, declination=0.0)
-
 
             self.accBias      = Vector3D(0.,0.,0.)
             self.velocityBias = Vector3D(0.,0.,0.)
@@ -300,6 +311,7 @@ class dummyZMQ:
                                                         'Y' if self.volume_up   else 'N',
                                                         'Y' if self.volume_down else 'N',
                                                         'N' if self.noButton    else 'Y')
+                    msg_out+= 'Touch Pad:{},{}\n'.format(self.touchX, self.touchY)
 
                     msg_out+= '-------------------------------------------------\n'
                     msg_out+= 'Acc     {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.acc.x,self.acc.y,self.acc.z,self.acc.norm)
@@ -323,7 +335,9 @@ class dummyZMQ:
                     print(msg_out, flush=True)
 
             ##############################################################
-                        
+
+            self.logger.log(logging.DEBUG, 'Data Updated')                        
+
             # Wait to next interval time
             sleepTime = self.data_updateInterval - (time.perf_counter() - currentTime)
             await asyncio.sleep(max(0.,sleepTime))
@@ -391,6 +405,14 @@ if __name__ == '__main__':
         metavar='<report>',
         help='report level: 0(None), 1(regular)',
         default = 0
+    )
+
+    parser.add_argument(
+        '-s',
+        '--static', 
+        dest = 'static',
+        action='store_true', 
+        help='Keeps buttons pressed',
     )
 
     parser.add_argument(
