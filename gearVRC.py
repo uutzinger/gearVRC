@@ -1860,12 +1860,18 @@ class gearVRC:
             # Display the Data
             msg_out = '-------------------------------------------------\n'
             if self.args.report > 1:
-                msg_out+= 'gearVR Controller: Temp {:>4.1f}, Bat {:>3d}, HighRes:{}\n'.format(
+                msg_out+= 'gearVR Ctr: Temp {:>4.1f}, Bat {:>3d}, HighRes:{}, Moving:{}, Mag:{}\n'.format(
                                                     self.temperature, self.battery_level, 
-                                                    'Y' if self.HighResMode else 'N')
+                                                    'Y' if self.HighResMode else 'N',
+                                                    'Y' if self.moving else 'N',
+                                                    'Y' if self.magok else 'N'
+                                                    )
             else:
-                msg_out+= 'gearVR Controller: Temp {:>4.1f}, Bat {:>3d}\n'.format(
-                                                    self.temperature, self.battery_level)
+                msg_out+= 'gearVR Ctr: Temp {:>4.1f}, Bat {:>3d}, Moving:{}, Mag:{}\n'.format(
+                                                    self.temperature, self.battery_level,
+                                                    'Y' if self.moving else 'N',
+                                                    'Y' if self.magok else 'N')
+                
             msg_out+= '-------------------------------------------------\n'
 
             if self.args.report > 0:
