@@ -11,8 +11,8 @@ This is an implementation of a client for Samsung gear Virtual Reality Controlle
 
 and fuses that IMU data to a pose.
 
-Included is an Viewer that can subscribe to the client over the network and display
-a realistic rendering of the the controller including highlighting the user interactions
+Included is a viewer that can subscribe to the client over the network and display
+a realistic rendering of the the controller, including highlighting the user interactions
 with the controller.
 
 <img src="./assets/gearVRCviewer.jpg" alt="gearVRC Viewer" width="400" height="321">

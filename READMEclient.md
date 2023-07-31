@@ -92,7 +92,7 @@ This software uses
 ## bleak Issues
 This implementation uses **bleak** for BLE communication. 
 
-**bleak** expects a confirmation reply after a device is connected and some devices do not conform with this BLE specs. For gearVRC to work well you need to edit the bleak client code in the bluezdbus backend and change ```assert reply is not None``` to ```if reply is not None:``` and indent the code until the line before ```assert_reply(reply).
+**bleak** expects a confirmation reply after a device is connected and some devices do not conform with this BLE specification. For gearVRC to work well, you need to edit the bleak client code in the bluezdbus backend and change ```assert reply is not None``` to ```if reply is not None:``` and indent the code until the line before ```assert_reply(reply).
 
 ## Behaviors of the gearVR Controller  
 
@@ -102,11 +102,11 @@ Using gear VR Controller on **Windows** is **cumbersome** as one needs to remove
 
 In this implementation, when you press the Home button three times within 2 seconds, the program exits.
 
-**gearVRC Controller** can enter into a **pairing stage** that it will remain in and **refuse any pairing** attempts from Raspian or Windows. On Raspian, a system reboot helps. On Windows you need to remove the device so that the OS has no prior knowledge of the controller. On some Windows system bluetooth devices appear in the list and after removal the list is not cleared.
+**gearVRC Controller** can enter into a **pairing stage** that it will remain in and **refuse any pairing** attempts from Raspian or Windows. On Raspian, a system reboot helps. On Windows you need to remove the device so that the OS has no prior knowledge of the controller. On some Windows systems, bluetooth devices appear in the list and after removal the list is not cleared.
 
 If you are stuck, attempt unpairing and removing device in bluetoothctl. Remove battery from gear VR Controller, reboot the system and try fresh again until the entry in bluetoothctl matches the one listed below.
 
-The update rate from the controller is between **45 and 72 Hz**. If you restart the program it will switch in between those two numbers. It is not yet clear to me how to make sure we always get the same update rate. Since I use asyncio to signal to the ZMQ task that new data is available, the ZMQ update rate is slower than the fusion rate. This is due to the system timer resolution. If you need full data rate you need to move the ZMQ handling to the data notification routine.
+The update rate from the controller is between **45 and 72 Hz**. If you restart the program it will switch in between those two numbers. It is not yet clear to me how to make sure we always get the same update rate. Since I use asyncio to signal to the ZMQ task that new data is available, the ZMQ update rate is slower than the fusion rate. This is due to the system timer resolution. If you need full data rate you need to move the ZMQ handling to the new data notification routine.
 
 The gearVRC sensors does not provide accurate data during the first couple readings after the system boots. You should not use that data for AHRS data fusion because both magnetometer and accelerometer are affected and AHRS makes an initial guess of its pose from the first reading.
 
@@ -302,20 +302,16 @@ Then
 
 After pairing succeeded the device is connected. Accept the pop ups appearing on the desktop. The ones without user input buttons you need to close. 
 
-Since the device is now connected, you will need to `disconnect 2C:BA:BA:2E:17:DB` because: 
-
-***You can not run this software if bluetoothctl or any other device is already connected to the gearVR Controller!***
-
 A module was added that detects wether the gearVR Controller is already connected in the system. It runs bluetoothctl info command and executes disconnect command if necessary. Bluetoothctl is not available on Windows.
 
 ## Calibration
 For AHRS, calibration data is expected that ensures proper offset and scaling of the sensor measurements. These calibration data are specific for each sensor but one can also set offset to 0 and scales to 1 in the provided json files.
 
 For calibration please check freeIMUCal in my repositories.
-The magnetometer is unusable without calibration. If you just need the touchpad and input keys, no calibration is needed. 
-The gyroscope has drift and the code attempts detecting when the device does not move and calibrates for the drift while it runs.
+The magnetometer is unusable without calibration. If you just need the touchpad and input keys, no calibration is needed.
+The gyroscope has drift and the code attempts detecting when the device does not move and calibrates for the drift while it runs. It will intermittently save the offset to the gyroscope calibration file.
 
 ## pyIMU
-pyIMU is used to fuse IMU sensor data and calculates the device pose. The pose is best understood in Roll Pitch and Yaw terms but its internally computed using quaternions. 
+pyIMU is used to fuse IMU sensor data and calculates the device pose. The pose is best understood in Roll Pitch and Yaw terms but its internally computed using quaternions.
 
 Using pyIMU it is possible to calculate acceleration and velocity of the controller. The accuracy is insufficient to estimate the position.
