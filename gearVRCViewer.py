@@ -4,7 +4,7 @@
 # Samsung gearVR Controller Viewer
 ###############################################################################
 # Renders the controller as a 3D object based on the controllers pose.
-# Receives pose through ZMQ from gearVRController.py
+# Receives pose through ZMQ from gearVRC.py
 # Highlights the buttons based on user input.
 #
 # Urs Utzinger 2023
@@ -53,8 +53,8 @@ from OpenGL.GL import glClearColor, glEnable, glClear, glViewport, glMatrixMode,
     glGetTexLevelParameteriv, glGetTexImage, glGetError, glFlush, glDrawBuffer, \
     glActiveTexture, glUniform1i, glGetIntegerv, glPopMatrix, glPushMatrix, \
     glCopyImageSubData, glEnableClientState, glDisableClientState, glVertexPointer, \
-    glDeleteBuffers, glDeleteVertexArrays
-        
+    glDeleteBuffers, glDeleteVertexArrays, glLightfv
+                                         
 from OpenGL.GLU import gluLookAt, gluPerspective
 
 from OpenGL.GL import GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT, GL_TEXTURE_2D, \
@@ -78,8 +78,9 @@ from OpenGL.GL import GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT, GL_TEXTURE_2D, \
     GL_ACCUM_BUFFER_BIT, GL_EVAL_BIT, GL_LINE_BIT, GL_LIST_BIT, \
     GL_PIXEL_MODE_BIT, GL_POINT_BIT, GL_POLYGON_BIT, GL_TEXTURE_BIT, \
     GL_TEXTURE1, GL_TEXTURE0, GL_TEXTURE_BINDING_2D, \
-    GL_FRAMEBUFFER_BINDING, GL_CURRENT_PROGRAM, GL_VERTEX_ARRAY
-                                   
+    GL_FRAMEBUFFER_BINDING, GL_CURRENT_PROGRAM, GL_VERTEX_ARRAY, \
+    GL_POSITION, GL_LIGHT1, GL_POSITION, GL_DIFFUSE
+                               
 # Pywavefront is used to load the 3D model
 from pywavefront.visualization import VERTEX_FORMATS
 from pywavefront import Wavefront
@@ -642,6 +643,13 @@ class ObjectRenderingWidget(QOpenGLWidget):
         self.drawShaderProgram.addShaderFromSourceCode(QOpenGLShader.Fragment, FRAGMENT_SHADER_DRAW)
         self.drawShaderProgram.link()
 
+        self.lightPosition0 = [15.0, 15.0, -15.0, 1.0]
+        self.lightDiffuse0 =  [ 0.67, 0.67, 0.67, 1.0] 
+        self.lightPosition1 = [15.0, -15.0, 15.0, 1.0]
+        self.lightDiffuse1 =  [ 0.8, 0.8, 0.8, 1.0] 
+                    
+        glLightfv(GL_LIGHT0, GL_POSITION, light_position)
+        
         self.logger.log(logging.INFO, 'Main GL Widget is initialized')
 
     def resizeGL(self, width, height):
@@ -802,7 +810,12 @@ class ObjectRenderingWidget(QOpenGLWidget):
                 glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR,  (GLfloat * 4)(*self.renderingObject.specular))
                 glMaterialfv(GL_FRONT_AND_BACK, GL_EMISSION,  (GLfloat * 4)(*self.renderingObject.emissive))
                 glMaterialf (GL_FRONT_AND_BACK, GL_SHININESS, min(128.0, self.renderingObject.shininess))
+                glLightfv(GL_LIGHT0, GL_POSITION, self.lightPosition0)
+                glLightfv(GL_LIGHT1, GL_POSITION, self.lightPosition1)
+                glLightfv(GL_LIGHT0, GL_DIFFUSE,  self.lightDiffuse0)
+                glLightfv(GL_LIGHT1, GL_DIFFUSE,  self.lightDiffuse1)
                 glEnable(GL_LIGHT0)
+                glEnable(GL_LIGHT1)
                 glEnable(GL_LIGHTING)
             else:
                 glDisable(GL_LIGHTING)
@@ -1030,7 +1043,7 @@ class ObjectRenderingWidget(QOpenGLWidget):
         self.homeCx,       self.homeCy       = 123,  43  # Home Button
         self.touchCx,      self.touchCy      = 198,  60  # Touch Pad
         self.touchRx,      self.touchRy      =  30,  30
-        self.padRx,        self.padRy        =   5,   5
+        self.padRx,        self.padRy        =   3,   3
         self.volumeUpCx,   self.volumeUpCy   = 106,  12  # Volume Up
         self.volumeDownCx, self.volumeDownCy = 140,  12  # Volume Down
         self.volumeRx,     self.volumeRy     =  11,  11

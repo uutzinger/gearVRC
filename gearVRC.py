@@ -37,14 +37,14 @@ import math
 import time
 import numpy as np
 import os
-from copy import copy
+from   copy import copy
 import serial_asyncio
 import re
 import msgpack
 import pathlib
 import json
 
-from bleak      import BleakClient, BleakScanner
+from bleak import BleakClient, BleakScanner
 from bleak.backends.characteristic import BleakGATTCharacteristic
 
 from pyIMU.madgwick import Madgwick
@@ -85,7 +85,7 @@ MAGFIELD_MIN = 0.8*MAGFIELD/1000.  # micro Tesla
 
 # Program Timing:
 ################################################################
-KEEPALIVEINTERVAL                = 60.    # Every 60 secs
+KEEPALIVEINTERVAL                = 60.    # Every 60 secs send command to keep alive
 VIRTUALUPDATEINTERVAL            = 1./20. # 20 Hz
 REPORTINTERVAL                   = 1./10. # 10 Hz
 
@@ -331,8 +331,8 @@ def hex_to_int(hex_chars):
 class gearSystemData(object):
     '''System relevant performance data'''
     def __init__(self, temperature: float=0.0, battery_level: float =-1.0, 
-                 data_rate: int = 0, virtual_rate: int = 0, fusion_rate: int = 0, 
-                 zmq_rate: int = 0, serial_rate: int = 0, reporting_rate: int =0) -> None:
+                 data_rate: int = 0, virtual_rate: int = 0, fusion_rate:    int = 0, 
+                 zmq_rate:  int = 0, serial_rate:  int = 0, reporting_rate: int = 0) -> None:
         self.temperature     = temperature
         self.battery_level   = battery_level
         self.data_rate       = data_rate
@@ -487,38 +487,38 @@ class gearVRC:
         self.pnp_ID                 = -1
 
         # Controller home button to stop program
-        self.ESC_reps               = args.escreps
-        self.ESC_timeout            = args.esctimeout
+        self.ESC_reps                   = args.escreps
+        self.ESC_timeout                = args.esctimeout
         
         # Signals
-        self.lost_connection        = asyncio.Event()
-        # self.dataAvailable          = asyncio.Event()
-        self.processedDataAvailable = asyncio.Event()
-        # self.virtualDataAvailable   = asyncio.Event()
-        # self.fusedDataAvailable     = asyncio.Event()
-        # self.reportingDataAvailable = asyncio.Event()
-        self.terminate              = asyncio.Event()
+        self.lost_connection            = asyncio.Event()
+        # self.dataAvailable            = asyncio.Event()
+        self.processedDataAvailable     = asyncio.Event()
+        # self.virtualDataAvailable     = asyncio.Event()
+        # self.fusedDataAvailable       = asyncio.Event()
+        # self.reportingDataAvailable   = asyncio.Event()
+        self.terminate                  = asyncio.Event()
         # These Signals are easier to deal with without Event
-        self.connected              = False
-        self.sensorStarted          = False
-        self.finish_up              = False
+        self.connected                  = False
+        self.sensorStarted              = False
+        self.finish_up                  = False
         
         if logger is not None: self.logger = logger
         else:                  self.logger = logging.getLogger('gearVRC')
 
-        self.VRMode                 = args.vrmode
-        self.HighResMode            = False
+        self.VRMode                     = args.vrmode
+        self.HighResMode                = False
 
         # device sensors
-        self.sensorTime             = 0.    # There are 3 different times transmitted from the sensor
-        # self.aTime                  = 0.    # Assuming the earliest time corresponds to IMU
-        # self.bTime                  = 0.    #
-        self.delta_sensorTime       = 0.
-        # self.delta_aTime            = 0.
-        # self.delta_bTime            = 0.
-        self.previous_sensorTime    = 0.
-        # self.previous_aTime         = 0.
-        # self.previous_bTime         = 0.
+        self.sensorTime                 = 0.    # There are 3 different times transmitted from the sensor
+        # self.aTime                    = 0.    # Assuming the earliest time corresponds to IMU
+        # self.bTime                    = 0.    #
+        self.delta_sensorTime           = 0.
+        # self.delta_aTime              = 0.
+        # self.delta_bTime              = 0.
+        self.previous_sensorTime        = 0.
+        # self.previous_aTime           = 0.
+        # self.previous_bTime           = 0.
 
         # IMU
         self.accX                   = 0.    # IMU Accelerometer
@@ -621,18 +621,8 @@ class gearVRC:
         self.zmq_rate               = 0
         self.zmq_deltaTime          = 0.
         self.zmq_updateCounts       = 0
-        self.zmq_lastTimeRate    = time.perf_counter()
+        self.zmq_lastTimeRate       = time.perf_counter()
         
-        # Virtual Wheel
-        ###############
-        # wheelPositions              = [i for i in range(0, NUMWHEELPOS)]
-        # shift by 45 degrees (want to create region for left, right, top , bottom)
-        # wheelPositions              = ror(wheelPositions, NUMWHEELPOS // 8)
-        # # make 4 equal length sections
-        # position_sections           = mit.divide(4,wheelPositions)
-        # # assign 4 sections to individual ranges: top, right, bottom, left
-        # [self.l_right, self.l_top, self.l_left, self.l_bottom] = [list(x) for x in position_sections]
-
         self.current_directory = str(pathlib.Path(__file__).parent.absolute())
 
         my_file = pathlib.Path(self.current_directory + '/Gyr.json')
@@ -703,20 +693,20 @@ class gearVRC:
         # First Time Getting Data
         self.firstTimeData     = True  # want to initialize average acc,mag,gyr with current reading first time
         self.sensorIsBooting   = True  # need to read sensor a few times until we get reasonable data
-        self.sensorRunInCounts = 0     # for bootup
+        self.sensorRunInCounts = 0     # for boot up
 
     def update_times(self):
-        self.home_pressedTime       = time.perf_counter()
-        self.data_lastTime          = time.perf_counter()
-        self.data_lastTimeRate      = time.perf_counter()
-        self.virtual_lastTimeRate   = time.perf_counter()
-        self.previous_virtualUpdate = time.perf_counter()
-        self.fusion_lastTimeRate    = time.perf_counter()
-        self.previous_fusionTime    = time.perf_counter()
-        self.report_lastTimeRate    = time.perf_counter()
-        self.zmq_lastTimeRate       = time.perf_counter()
-        self.motion_lastTimeRate    = time.perf_counter()
-        self.previous_motionTime    = time.perf_counter()
+        self.home_pressedTime       = \
+        self.data_lastTime          = \
+        self.data_lastTimeRate      = \
+        self.virtual_lastTimeRate   = \
+        self.previous_virtualUpdate = \
+        self.fusion_lastTimeRate    = \
+        self.previous_fusionTime    = \
+        self.report_lastTimeRate    = \
+        self.zmq_lastTimeRate       = \
+        self.motion_lastTimeRate    = \
+        self.previous_motionTime    = \
         self.firstTimeMotion        = time.perf_counter()
     
 
@@ -749,7 +739,7 @@ class gearVRC:
             # print('C', end='', flush=True)
             
             # Make sure device is not already connected
-            # not available on Windows
+            #   (not available on Windows)
             ###########################################
             if self.device_address is not None:
                 if check_bluetooth_connected(self.device_address):
@@ -1023,7 +1013,6 @@ class gearVRC:
         else:
             self.logger.log(logging.ERROR, 'Could not read pnp id: disconnected')
 
-
     async def subscribe_notifications(self):
         ''' 
         Subscribe to BLE Data and Battery Notifications
@@ -1109,7 +1098,7 @@ class gearVRC:
         
         # Time:
         #  There are three time stamps:
-        #   Not sure which belongs to which. 
+        #  Not sure which belongs to which. 
         #   accelerometer is usually read faster than magnetometer, 
         #   gyroscope and accelerometer are usually on the same chip
         #   assuming earliest time stamp is the IMU time stamp
@@ -1137,18 +1126,16 @@ class gearVRC:
         self.noButton    = True if ((data[58] & 64) == 64) else False
 
         # Touch pad:
-        #  Max observed value = 315
-        #  Location 0/0 is equivalent to not touched
-        #  Bottom right are the largest numbers
-        #  Y axis is up-down
-        #  X axis is left-right 
+        #   Max observed value = 315
+        #   Location 0/0 is equivalent to not touched
+        #   Bottom right are the largest numbers
+        #   Y axis is up-down
+        #   X axis is left-right 
         self.touchX     = ((data[54] & 0xF) << 6) + ((data[55] & 0xFC) >> 2) & 0x3FF
         self.touchY     = ((data[55] & 0x3) << 8) + ((data[56] & 0xFF) >> 0) & 0x3FF
 
         # IMU:
         #  Accelerometer, Gyroscope, Magnetometer
-        #  Magnetometer often has large hard iron offset
-        #
         self.accX = struct.unpack('<h', data[4:6])[0]   * 0.00478840332  # 10000.0 * 9.80665 / 2048 / 10000.0       # m**2/s
         self.accY = struct.unpack('<h', data[6:8])[0]   * 0.00478840332  #
         self.accZ = struct.unpack('<h', data[8:10])[0]  * 0.00478840332  #
@@ -1186,10 +1173,10 @@ class gearVRC:
         #   gyr.x clock wise forward     gyr.y
         #   gyr.y clockwise to the right gyr.x
         #   gyr.z clockwise downwards   -gyr.z
-
-        # acc -Y-X+Z
-        # gyr +Y+X-Z        
-        # mag -X+Y+Z
+        # Or in short summary:
+        #   acc -Y-X+Z
+        #   gyr +Y+X-Z        
+        #   mag -X+Y+Z
         self.acc = Vector3D(-self.accY, -self.accX,  self.accZ)
         self.gyr = Vector3D( self.gyrY,  self.gyrX, -self.gyrZ)
         self.mag = Vector3D(-self.magX,  self.magY,  self.magZ)
@@ -1210,8 +1197,8 @@ class gearVRC:
     def compute_virtual(self):
         '''
         Compute virtual wheel and virtual touchpad
-         The wheel is touched when finger slides along the rim of the touchpad
-         The virtual touchpad is updated when the finger slides on the touchpad
+          The wheel is touched when finger slides along the rim of the touchpad
+          The virtual touchpad is updated when the finger slides on the touchpad
         '''        
         if not (self.touchX == 0 and self.touchY == 0): 
 
@@ -1407,46 +1394,6 @@ class gearVRC:
     ##############################################################################################
     # Bleak Call BacK
     ##############################################################################################
-    
-    # async def handle_sensorData(self, characteristic: BleakGATTCharacteristic, data: bytearray):
-    #     '''
-    #     Decode the sensor data
-    #     Compared to this Gear VRC reverse engineering (Java): https://github.com/jsyang/gearvr-controller-webbluetooth
-    #     this code includes the 3 different time stamps as well as correct magnetometer data
-    #     '''
-
-    #     # print('D', end='', flush=True)
-
-    #     startTime = time.perf_counter()
-
-    #     self.runTime = startTime - self.startTime
-
-    #     # Update rate
-    #     self.data_updateCounts += 1
-    #     self.data_deltaTime = startTime - self.data_lastTime
-    #     self.data_lastTime = time.perf_counter()
-
-    #     if startTime - self.data_lastTimeRate >= 1:
-    #         self.data_rate = copy(self.data_updateCounts)
-    #         self.data_lastTimeRate = copy(startTime)
-    #         self.data_updateCounts = 0
-
-    #     # VRMode does not seems to work and results in receiving only 2 data values instead of 60
-    #     # Other example attempt switching to VRMode after some runtime but his does not work:
-    #     # if self.VRMode and not self.HighResMode:
-    #     #     if self.runTime > 5.0:
-    #     #         await self.start_sensor(VRMode=True)        
-
-    #     # Decode the data
-        
-    #     if (len(data) >= 60):
-    #         self.decode_data(data)
-    #         self.dataAvailable.set()
-    #         # await asyncio.sleep(0)  # yield to other tasks
-    #     else:
-    #         self.logger.log(logging.INFO, 'Not enough values: {}'.format(len(data)))
-    #         # switch to sensor mode
-    #         await self.start_sensor(VRMode = False)
 
     async def handle_data(self, characteristic: BleakGATTCharacteristic, data: bytearray):
         '''
@@ -1511,10 +1458,7 @@ class gearVRC:
                             self.virtual_updateCounts = 0
                         #
                         self.compute_virtual()
-                        # self.logger.log(logging.DEBUG, 'Wheel Position: {}'.format(self.wheelPos))
-                        # self.logger.log(logging.DEBUG, 'Delta Wheel Position: {}'.format(self.delta_wheelPos))
-                        # self.logger.log(logging.DEBUG, 'Virtual Touch Position: {},{}'.format(self.absX,self.absY))
-                        #
+
                         self.virtual_deltaTime = time.perf_counter() - start_virtualUpdate
 
                 # Fusion
@@ -1568,219 +1512,6 @@ class gearVRC:
 
         self.battery_level = int.from_bytes(data,'big')
 
-    # FOLLOWING TASKS HAVE BEEN MOVED TO handle_data
-    ################################################
-    # async def update_EscSequence(self, counts=3, timeout=1.0):
-    #     '''
-    #     Check if home button is pressed three times in a row within timeout seconds
-    #     '''
-
-    #     self.logger.log(logging.INFO, 'Starting ESC Detection Task...')
-
-    #     # Keep track of home button presses
-    #     self.previous_home = False
-    #     self.home_updateCounts = 0
-    #     self.home_pressedTime = time.perf_counter()
-
-    #     while not self.finish_up:
-
-    #         # print('E', end='', flush=True)
-
-    #         await self.dataAvailable.wait()
-    #         self.dataAvailable.clear()
-
-    #         if self.check_ESC_sequence():
-    #             self.logger.log(logging.INFO, 'ESC detected')
-    #             self.terminate.set()
-            
-    #         await asyncio.sleep(0) # yield to other tasks
-
-    #     self.logger.log(logging.INFO, 'ESC Detection stopped')
-
-    # async def update_processing(self):
-    #     '''
-    #     Combining individual processing tasks into a single task
-    #     This reduced the amount of await dataavailable statements
-        
-    #     ESC sequence
-    #       Check if home button is pressed three times in a row within timeout seconds
-    #     fusion
-    #       Fuse IMU data to pose, roll, pitch, yaw, and heading
-    #     virtual    
-    #       Create Virtual Wheel
-    #       Create Extended Touchpad
-    #       Inspired from https://github.com/rdady/gear-vr-controller-linux
-    #       This routine can be throttled to lower update rate
-    #     '''
-
-    #     self.logger.log(logging.INFO, 'Starting Processing Task...')
-
-    #     # setup variables
-
-    #     # ESC sequence variables
-    #     self.previous_home           = False
-    #     self.home_updateCounts       = 0
-    #     self.home_pressedTime        = time.perf_counter()
-
-    #     # Virtual variables
-    #     if self.args.virtual:
-    #         self.previous_virtualUpdate  = time.perf_counter()
-    #         self.virtual_lastTimeRate    = time.perf_counter()
-    #         self.virtual_updateCounts    = 0
-    #         self.previous_wheelPos       = 0
-    #         self.previous_touchX         = 0
-    #         self.previous_touchY         = 0
-
-    #     # Fusion variables
-    #     if self.args.fusion:
-    #         self.fusion_updateCounts     = 0
-    #         self.fusion_lastTimeRate     = time.perf_counter()
-    #         self.previous_fusionTime     = time.perf_counter()
-
-    #     while not self.finish_up:
-
-    #         startTime = time.perf_counter()
-
-    #         await self.dataAvailable.wait()
-    #         self.dataAvailable.clear()
-
-    #         # ESC sequence
-    #         ###############################################################
-    #         if self.check_ESC_sequence():
-    #             self.logger.log(logging.INFO, 'ESC detected')
-    #             self.terminate.set()
-                    
-    #         # Virtual
-    #         ###############################################################
-
-    #         if self.args.virtual:
-    #             # We can throttle the update rate of the virtual features
-    #             if startTime - self.previous_virtualUpdate > VIRTUALUPDATEINTERVAL:
-    #                 self.previous_virtualUpdate = copy(startTime)
-    #                 #
-    #                 start_virtualUpdate = time.perf_counter()
-    #                 #
-    #                 self.virtual_updateCounts += 1
-    #                 if (startTime - self.virtual_lastTimeRate)>= 1.:
-    #                     self.virtual_rate = copy(self.virtual_updateCounts)
-    #                     self.virtual_lastTimeRate = copy(startTime)
-    #                     self.virtual_updateCounts = 0
-    #                 #
-    #                 self.compute_virtual()
-    #                 self.logger.log(logging.DEBUG, 'Wheel Position: {}'.format(self.wheelPos))
-    #                 self.logger.log(logging.DEBUG, 'Delta Wheel Position: {}'.format(self.delta_wheelPos))
-    #                 self.logger.log(logging.DEBUG, 'Virtual Touch Position: {},{}'.format(self.absX,self.absY))
-    #                 #
-    #                 self.virtual_deltaTime = time.perf_counter() - start_virtualUpdate
-
-    #         # Fusion
-    #         ###############################################################
-
-    #         if self.args.fusion:
-    #             # update interval
-    #             start_fusionUpdate = time.perf_counter()
-    #             # fps
-    #             self.fusion_updateCounts += 1
-    #             if (startTime - self.fusion_lastTimeRate)>= 1.:
-    #                 self.fusion_rate = copy(self.fusion_updateCounts)
-    #                 self.fusion_lastTimeRate = copy(startTime)
-    #                 self.fusion_updateCounts = 0
-    #             #
-    #             self.compute_fusion()
-    #             self.fusion_deltaTime = time.perf_counter() - start_fusionUpdate
-
-    #         self.processedDataAvailable.set()
-    #         await asyncio.sleep(0) # allow other tasks to run
-
-    #     self.logger.log(logging.INFO, 'Data processing stopped')
-
-    # async def update_virtual(self):
-    #     ''' 
-    #     Create Virtual Wheel
-    #     Create Extended Touchpad
-    #     Inspired from https://github.com/rdady/gear-vr-controller-linux
-    #     This routine can be throtteled to lower update rate
-    #     '''
-
-    #     self.logger.log(logging.INFO, 'Starting Virtual Task...')
-
-    #     self.virtual_lastTimeRate    = time.perf_counter()
-    #     self.virtual_updateCounts    = 0
-    #     self.previous_wheelPos  = 0
-    #     self.previous_touchX    = 0
-    #     self.previous_touchY    = 0
-
-    #     while not self.finish_up:
-
-    #         # print('V', end='', flush=True)
-
-    #         startTime = time.perf_counter()
-
-    #         # self.logger.log(logging.DEBUG, 'Waiting for sensor data')
-    #         await self.dataAvailable.wait()
-    #         self.dataAvailable.clear()
-
-    #         self.virtual_updateCounts += 1
-    #         if (startTime - self.virtual_lastTimeRate)>= 1.:
-    #             self.virtual_rate = copy(self.virtual_updateCounts)
-    #             self.virtual_lastTimeRate = copy(startTime)
-    #             self.virtual_updateCounts = 0
-
-    #         # Where are we touching the pad?
-    #         # Wheel and extended touchpad
-    #         self.compute_virtual()
-    #         self.logger.log(logging.DEBUG, 'Wheel Position: {}'.format(self.wheelPos))
-    #         self.logger.log(logging.DEBUG, 'Delta Wheel Position: {}'.format(self.delta_wheelPos))
-    #         self.logger.log(logging.DEBUG, 'Virtual Touch Position: {},{}'.format(self.absX,self.absY))
-
-    #         self.virtual_deltaTime = time.perf_counter() - startTime
-
-    #         # Wait to next interval time
-    #         sleepTime = self.virtual_updateInterval - (time.perf_counter() - startTime)
-    #         await asyncio.sleep(max(0.,sleepTime))
-    #         timingError = time.perf_counter() - startTime - self.virtual_updateInterval
-    #         self.virtual_updateInterval = max(0., VIRTUALUPDATEINTERVAL - timingError)
-
-    #     self.logger.log(logging.INFO, 'Virtual stopped')
-
-    # async def update_fusion(self):
-    #     ''' 
-    #     Fuse data to pose
-    #     '''
-
-    #     self.logger.log(logging.INFO, 'Starting Fusion Task...')
-
-    #     self.fusion_updateCounts = 0
-    #     self.fusion_lastTimeRate  = time.perf_counter()
-    #     self.previous_fusionTime = time.perf_counter()
-
-    #     while not self.finish_up:
-
-    #         # print('F', end='', flush=True)
-
-    #         startTime = time.perf_counter()
-
-    #         await self.dataAvailable.wait()
-    #         self.dataAvailable.clear()
-
-    #         # fps
-    #         self.fusion_updateCounts += 1
-    #         if (startTime - self.fusion_lastTimeRate)>= 1.:
-    #             self.fusion_rate = copy(self.fusion_updateCounts)
-    #             self.fusion_lastTimeRate = copy(startTime)
-    #             self.fusion_updateCounts = 0
-
-    #         self.compute_fusion()
-
-    #         # update interval
-    #         self.fusion_deltaTime = time.perf_counter() - startTime
-
-    #         # Dont wait here, we want to fuse every IMU reading
-    #         # Throttling not implemented here
-    #         await asyncio.sleep(0)
-
-    #     self.logger.log(logging.INFO, 'Fusion stopped')
-
     ##############################################################################################
     # gearVRC Tasks
     ##############################################################################################
@@ -1799,7 +1530,7 @@ class gearVRC:
 
             if self.client is not None and self.connected and self.sensorStarted:
                 await self.client.write_gatt_char(self.controller_command_characteristics,CMD_KEEP_ALIVE)
-                self.logger.log(logging.DEBUG,'Keep alive sent')        
+                # self.logger.log(logging.DEBUG,'Keep alive sent')        
                 sleepTime=KEEPALIVEINTERVAL
             else:
                 if self.sensorStarted and self.connected: self.logger.log(logging.ERROR,'Could not send Keep alive')
@@ -2150,21 +1881,21 @@ class gearVRC:
             if self.args.virtual:
                 
                 # format the virtual data (wheel and touchpad)
-                data_virtual.time = self.sensorTime
-                data_virtual.absX = self.absX
-                data_virtual.absY = self.absY
-                data_virtual.dirUp = self.dirUp
-                data_virtual.dirDown = self.dirDown
-                data_virtual.dirLeft = self.dirLeft
-                data_virtual.dirRight = self.dirRight
-                data_virtual.wheelPos = self.wheelPos
-                data_virtual.top = self.top
-                data_virtual.bottom = self.bottom
-                data_virtual.left = self.left
-                data_virtual.right = self.right
-                data_virtual.center = self.center
+                data_virtual.time       = self.sensorTime
+                data_virtual.absX       = self.absX
+                data_virtual.absY       = self.absY
+                data_virtual.dirUp      = self.dirUp
+                data_virtual.dirDown    = self.dirDown
+                data_virtual.dirLeft    = self.dirLeft
+                data_virtual.dirRight   = self.dirRight
+                data_virtual.wheelPos   = self.wheelPos
+                data_virtual.top        = self.top
+                data_virtual.bottom     = self.bottom
+                data_virtual.left       = self.left
+                data_virtual.right      = self.right
+                data_virtual.center     = self.center
                 data_virtual.isRotating = self.isRotating
-                data_virtual.clockwise = self.clockwise
+                data_virtual.clockwise  = self.clockwise
                 virtual_msgpack = msgpack.packb(obj2dict(vars(data_virtual)))
                 socket.send_multipart([b"virtual", virtual_msgpack])
                 # print('Zvirt', end='', flush=True)
@@ -2251,17 +1982,9 @@ async def main(args: argparse.Namespace):
     # They will run until stop signal is created, stop signal is indicated with event
     connection_task = asyncio.create_task(controller.update_connect())      # remain connected, will not terminate
     keepalive_task  = asyncio.create_task(controller.keep_alive())          # keep sensor alive, will not terminate
-    # escape_task     = asyncio.create_task(controller.update_EscSequence())  # User can press Home 3 times to exit
-    # processing_task     = asyncio.create_task(controller.update_processing()) # User can press Home 3 times to exit
 
-    # tasks = [connection_task, keepalive_task, escape_task]
-    # tasks = [connection_task, keepalive_task, processing_task]
     tasks = [connection_task, keepalive_task] # frequently used tasks
     terminator_tasks = [keepalive_task]       # slow tasks, long wait times
-
-    # if args.virtual:
-    #     virtual_task    = asyncio.create_task(controller.update_virtual())  # update wheel, will not terminate
-    #     tasks.append(virtual_task)
 
     if args.fusion:
         # fusion_task     = asyncio.create_task(controller.update_fusion()) # update pose, will not terminate
@@ -2356,7 +2079,7 @@ if __name__ == '__main__':
         dest = 'fusion',
         action='store_true',
         help='turns on IMU data fusion',
-        default = True
+        default = False
     )
 
     parser.add_argument(
@@ -2365,7 +2088,7 @@ if __name__ == '__main__':
         dest = 'motion',
         action='store_true',
         help='turns on velocity and position computation',
-        default = True
+        default = False
     )
 
     parser.add_argument(
