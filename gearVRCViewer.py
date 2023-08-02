@@ -647,8 +647,6 @@ class ObjectRenderingWidget(QOpenGLWidget):
         self.lightDiffuse0 =  [ 0.67, 0.67, 0.67, 1.0] 
         self.lightPosition1 = [15.0, -15.0, 15.0, 1.0]
         self.lightDiffuse1 =  [ 0.8, 0.8, 0.8, 1.0] 
-                    
-        glLightfv(GL_LIGHT0, GL_POSITION, light_position)
         
         self.logger.log(logging.INFO, 'Main GL Widget is initialized')
 
