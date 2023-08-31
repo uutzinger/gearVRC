@@ -66,6 +66,7 @@ TWOPI   = 2.0*math.pi
 
 BAUDRATE = 115200
 ZMQPORT  = 5556
+ZMQTIMEOUT = 1000 # ms
 
 # Device name:
 ################################################################
@@ -440,7 +441,171 @@ class gearMotionData(object):
             self.dtmotion     = dtmotion
             self.accBias      = accBias
             self.velocityBias = velocityBias
+
+##############################################################################
+# ZMQWorker
+###############################################################################
+
+class zmqWorkerGear():
+    '''
+    Receiving data from the GearVR Controller via ZMQ
+    Primarily useful for third party clients
+    '''
+
+    def __init__(self, logger, zmqPort='tcp://localhost:5556', parent=None):
+        super(zmqWorkerGear, self).__init__(parent)
+
+        # Signals
+        self.dataReady  = asyncio.Event()
+        self.finished   = asyncio.Event()
+
+        self.logger     = logger
+        self.zmqPort    = zmqPort
+        self.finish_up  = False
+        self.paused     = False
+
+        self.new_fusion  = False
+        self.new_imu     = False
+        self.new_system  = False
+        self.new_virtual = False
+        self.new_button  = False
+        self.new_motion  = False
+        self.timeout     = False
+
+        self.zmqTimeout = ZMQTIMEOUT
+
+        self.logger.log(logging.INFO, 'gearVRC zmqWorker initialized')
+
+    async def start(self, stop_event: asyncio.Event):
+
+        self.new_system  = False
+        self.new_imu     = False
+        self.new_virtual = False
+        self.new_fusion  = False
+        self.new_button  = False
+        self.new_motion  = False
+
+        context = zmq.Context()
+        poller  = zmq.Poller()
         
+        self.data_system  = None
+        self.data_imu     = None
+        self.data_motion  = None
+        self.data_virtual = None
+        self.data_button  = None
+        self.data_fusion  = None
+
+        socket = context.socket(zmq.SUB)
+        socket.setsockopt(zmq.SUBSCRIBE, b"system")
+        socket.setsockopt(zmq.SUBSCRIBE, b"imu")
+        socket.setsockopt(zmq.SUBSCRIBE, b"virtual")
+        socket.setsockopt(zmq.SUBSCRIBE, b"fusion")
+        socket.setsockopt(zmq.SUBSCRIBE, b"button")
+        socket.setsockopt(zmq.SUBSCRIBE, b"motion")
+        socket.connect(self.zmqPort)
+        poller.register(socket, zmq.POLLIN)
+
+        self.logger.log(logging.INFO, 'gearVRC zmqWorker started on {}'.format(self.zmqPort))
+
+        while not stop_event.is_set():
+            try:
+                events = dict(poller.poll(timeout=self.zmqTimeout))
+                if socket in events and events[socket] == zmq.POLLIN:
+                    response = socket.recv_multipart()
+                    if len(response) == 2:
+                        [topic, msg_packed] = response
+                        if topic == b"system":
+                            msg_dict = msgpack.unpackb(msg_packed)
+                            self.data_system = dict2obj(msg_dict)
+                            self.new_system = True
+                        elif topic == b"imu":
+                            msg_dict = msgpack.unpackb(msg_packed)
+                            self.data_imu = dict2obj(msg_dict)
+                            self.new_imu = True                            
+                        elif topic == b"virtual":
+                            msg_dict = msgpack.unpackb(msg_packed)
+                            self.data_virtual = dict2obj(msg_dict)
+                            self.new_virtual = True
+                        elif topic == b"fusion":
+                            msg_dict = msgpack.unpackb(msg_packed)
+                            self.data_fusion = dict2obj(msg_dict)
+                            self.new_fusion = True
+                        elif topic == b"button":
+                            msg_dict = msgpack.unpackb(msg_packed)
+                            self.data_button = dict2obj(msg_dict)
+                            self.new_button = True
+                        elif topic == b"motion":
+                            msg_dict = msgpack.unpackb(msg_packed)
+                            self.data_motion = dict2obj(msg_dict)
+                            self.new_motion = True
+                        else:
+                            pass  # not a topic we need
+                    else:
+                        self.logger.log(
+                            logging.ERROR, 'gearVRC zmqWorker malformed message')
+                else:  # ZMQ TIMEOUT
+                    self.logger.log(logging.ERROR, 'gearVRC zmqWorker timed out')
+                    poller.unregister(socket)
+                    socket.close()
+                    socket = context.socket(zmq.SUB)
+                    socket.setsockopt(zmq.SUBSCRIBE, b"system")
+                    socket.setsockopt(zmq.SUBSCRIBE, b"imu")
+                    socket.setsockopt(zmq.SUBSCRIBE, b"virtual")
+                    socket.setsockopt(zmq.SUBSCRIBE, b"fusion")
+                    socket.setsockopt(zmq.SUBSCRIBE, b"button")
+                    socket.setsockopt(zmq.SUBSCRIBE, b"motion")
+                    socket.connect(self.zmqPort)
+                    poller.register(socket, zmq.POLLIN)
+                    self.new_system = \
+                    self.new_imu    = \
+                    self.new_virtual= \
+                    self.new_fusion = \
+                    self.new_button = \
+                    self.new_motion = False
+
+                if (self.new_imu or self.new_fusion or self.new_button or self.new_motion or self.new_virtual):
+                    if not self.paused:
+                        self.dataReady.set()
+                        self.new_system = \
+                        self.new_imu    = \
+                        self.new_virtual= \
+                        self.new_fusion = \
+                        self.new_button = \
+                        self.new_motion = False
+                else:
+                    if not self.paused:
+                        pass
+            except:
+                self.logger.log(logging.ERROR, 'gearVRC zmqWorker error')
+                poller.unregister(socket)
+                socket.close()
+                socket = context.socket(zmq.SUB)
+                socket.setsockopt(zmq.SUBSCRIBE, b"system")
+                socket.setsockopt(zmq.SUBSCRIBE, b"imu")
+                socket.setsockopt(zmq.SUBSCRIBE, b"virtual")
+                socket.setsockopt(zmq.SUBSCRIBE, b"fusion")
+                socket.setsockopt(zmq.SUBSCRIBE, b"button")
+                socket.setsockopt(zmq.SUBSCRIBE, b"motion")
+                socket.connect(self.zmqPort)
+                poller.register(socket, zmq.POLLIN)
+                self.new_system = \
+                self.new_imu    = \
+                self.new_virtual= \
+                self.new_fusion = \
+                self.new_button = \
+                self.new_motion = False
+
+        self.logger.log(logging.DEBUG, 'gearVRC zmqWorker finished')
+        socket.close()
+        context.term()
+        self.finished.set()
+
+    def set_zmqPort(self, port):
+        self.zmqPort = port
+
+    def pause(self):
+        self.paused = not self.paused
+
 #########################################################################################################
 # gearVRC 
 #########################################################################################################
