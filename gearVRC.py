@@ -55,10 +55,17 @@ from pyIMU.motion import Motion
 import zmq
 import zmq.asyncio
 
-if os.name != 'nt':
+
+# Activate uvloop to speed up asyncio
+if os.name == 'nt':
+    from asyncio.windows_events import WindowsSelectorEventLoopPolicy
+    asyncio.set_event_loop_policy(WindowsSelectorEventLoopPolicy())
+else:
     import uvloop
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-    import subprocess
+
+# to run bluetoothctl
+if os.name == 'posix':  import subprocess
 
 RAD2DEG = 180.0 / math.pi
 DEG2RAD = math.pi / 180.0
@@ -125,6 +132,9 @@ MINYTOUCH                        = 0
 MAXXTOUCH                        = 1024                    # max virtual touchpad X
 MAXYTOUCH                        = 1024
 
+# Motion Detection
+# Adjust as it depends on sensor
+################################################################
 FUZZY_ACCEL_ZERO_MAX    = 10.0  # threshold for acceleration activity
 FUZZY_ACCEL_ZERO_MIN    = 9.5   # threshold for acceleration activity
 FUZZY_DELTA_ACCEL_ZERO  = 0.04  # threshold for acceleration change
@@ -149,7 +159,7 @@ def clamp(val, smallest, largest):
     if val > largest: return largest
     return val
 
-def calibrate(data:Vector3D, offset:Vector3D, crosscorr=None):
+def calibrate(data:Vector3D, offset:Vector3D, crosscorr=None, diagonal=False):
     ''' 
     IMU calibration
     bias is offset so that 0 is in the middle of the range
@@ -164,14 +174,24 @@ def calibrate(data:Vector3D, offset:Vector3D, crosscorr=None):
     # Bias
     d = copy(data)   # we do not want input parameter to change globally
     d = d-offset
-    # Cross Correlation
-    if crosscorr is not None:
-        d = d.rotate(crosscorr)
+    if diagonal:
+        if crosscorr is not None:
+            d=Vector3D(d.x*crosscorr[0,0], d.y*crosscorr[1,1], d.z*crosscorr[2,2])
+    else:
+        # Cross Correlation
+        if crosscorr is not None:
+            d = d.rotate(crosscorr)
 
     return d
 
 def loadCalibration(filename):
-    #
+    '''
+    Load Calibration file
+    Data is stored in json format
+    offset is the bias
+    crosscorr is the cross correlation matrix
+    diagonal of crosscorr is the scale
+    '''
     with open(filename, 'r') as file:
         d = json.load(file)
 
@@ -191,7 +211,7 @@ def loadCalibration(filename):
     return center, correctionMat
 
 def saveCalibration(filename, center, correctionMat):
-
+    '''Save Calibration Data to JSON file'''
     d = {
     "offset_x": center[0], 
     "offset_y": center[1], 
@@ -211,38 +231,41 @@ def saveCalibration(filename, center, correctionMat):
         json.dump(d, file)
 
 def detectMotion(acc: float, gyr: float, acc_avg: float, gyr_avg:float) -> bool:
-        # Three Stage Motion Detection
-        # Original Code is from FreeIMU Processing example
-        # Some modifications and tuning
-        #
-        # 0. Acceleration Activity
-        # 1. Change in Acceleration
-        # 2. Gyration Activity
-        # 2. Change in Gyration
+    '''
+    # 4 Stage Motion Detection
+    # ------------------------
+    1. Acceleration Activity
+    2. Change in Acceleration
+    3. Gyration Activity
+    4. Change in Gyration
+    
+    Original Code is from FreeIMU Processing example with some modifications and tuning
+    '''
 
-        # ACCELEROMETER
-        # Absolute value
-        acc_test       = abs(acc) > FUZZY_ACCEL_ZERO_MAX and abs(acc) < FUZZY_ACCEL_ZERO_MIN
-        # Sudden changes
-        acc_delta_test = abs(acc_avg - acc) > FUZZY_DELTA_ACCEL_ZERO
+    # ACCELEROMETER
+    # Absolute value
+    acc_test       = abs(acc) > FUZZY_ACCEL_ZERO_MAX and abs(acc) < FUZZY_ACCEL_ZERO_MIN
+    # Sudden changes
+    acc_delta_test = abs(acc_avg - acc) > FUZZY_DELTA_ACCEL_ZERO
 
-        # GYROSCOPE
-        # Absolute value
-        gyr_test       = abs(gyr)           > FUZZY_GYRO_ZERO
-        # Sudden changes
-        gyr_delta_test = abs(gyr_avg - gyr) > FUZZY_DELTA_GYRO_ZERO
-        
-        # DEBUG for fine tuning
-        # print(abs(acc), abs(acc_avg-acc), abs(gyr), abs(gyr_avg-gyr), acc_test, acc_delta_test, gyr_test, gyr_delta_test)
+    # GYROSCOPE
+    # Absolute value
+    gyr_test       = abs(gyr)           > FUZZY_GYRO_ZERO
+    # Sudden changes
+    gyr_delta_test = abs(gyr_avg - gyr) > FUZZY_DELTA_GYRO_ZERO
+    
+    # DEBUG for fine tuning
+    # print(abs(acc), abs(acc_avg-acc), abs(gyr), abs(gyr_avg-gyr), acc_test, acc_delta_test, gyr_test, gyr_delta_test)
 
-        # Combine acceleration test, acceleration deviation test and gyro test
-        return (acc_test or acc_delta_test or gyr_test or gyr_delta_test)
+    # Combine acceleration test, acceleration deviation test and gyro test
+    return (acc_test or acc_delta_test or gyr_test or gyr_delta_test)
 	
 def check_bluetooth_connected(address):
     '''
     Check if bluetooth device is already connected
+    Only on posix
     '''
-    if os.name != 'nt':
+    if os.name == 'posix':
         try:
             output = subprocess.check_output(["bluetoothctl", "info", address], timeout=5, text=True)
             lines  = output.strip().split("\n")
@@ -261,8 +284,9 @@ def check_bluetooth_connected(address):
 def disconnect_bluetooth_device(address):
     '''
     Disconnects bluetooth device
+    Only on posix
     '''
-    if os.name != 'nt':
+    if os.name == 'posix':
         try:
             output = subprocess.check_output(["bluetoothctl", "disconnect", address], timeout=5, text=True)
             return  True        
@@ -273,7 +297,7 @@ def disconnect_bluetooth_device(address):
 
 def obj2dict(obj):
     '''
-    encoding object variables to nested dict
+    encoding object variables to nested dictionary
     ''' 
     if isinstance(obj, dict):
         return {k: obj2dict(v) for k, v in obj.items()}
@@ -333,7 +357,11 @@ class gearSystemData(object):
     '''System relevant performance data'''
     def __init__(self, temperature: float=0.0, battery_level: float =-1.0, 
                  data_rate: int = 0, virtual_rate: int = 0, fusion_rate:    int = 0, 
-                 zmq_rate:  int = 0, serial_rate:  int = 0, reporting_rate: int = 0) -> None:
+                 zmq_rate:  int = 0, serial_rate:  int = 0, reporting_rate: int = 0,
+                 fusion:  bool=False, 
+                 motion:  bool=False,
+                 virtual: bool=False,
+                 serial:  bool=False) -> None:
         self.temperature     = temperature
         self.battery_level   = battery_level
         self.data_rate       = data_rate
@@ -342,6 +370,10 @@ class gearSystemData(object):
         self.zmq_rate        = zmq_rate
         self.serial_rate     = serial_rate
         self.reporting_rate  = reporting_rate
+        self.fusion          = fusion
+        self.motion          = motion
+        self.virtual         = virtual
+        self.serial          = serial
 
 class gearIMUData(object):
     '''IMU Data from the sensor'''
@@ -349,11 +381,15 @@ class gearIMUData(object):
                  time: float=0.0,
                  acc: Vector3D = Vector3D(0.,0.,0.),
                  gyr: Vector3D = Vector3D(0.,0.,0.),
-                 mag: Vector3D = Vector3D(0.,0.,0.)) -> None:
-        self.time = time
-        self.acc  = acc
-        self.mag  = mag
-        self.gyr  = gyr
+                 mag: Vector3D = Vector3D(0.,0.,0.),
+                 moving: bool  = True,
+                 magok: bool   = False) -> None:
+        self.time   = time
+        self.acc    = acc
+        self.mag    = mag
+        self.gyr    = gyr
+        self.moving = moving
+        self.magok  = magok
 
 class gearButtonData(object):
     '''Button Data from the sensor'''
@@ -452,17 +488,16 @@ class zmqWorkerGear():
     Primarily useful for third party clients
     '''
 
-    def __init__(self, logger, zmqPort='tcp://localhost:5556', parent=None):
-        super(zmqWorkerGear, self).__init__(parent)
+    def __init__(self, logger, zmqPort='tcp://localhost:5556'):
 
         # Signals
         self.dataReady  = asyncio.Event()
         self.finished   = asyncio.Event()
+        self.dataReady.clear()
+        self.finished.clear()
 
         self.logger     = logger
         self.zmqPort    = zmqPort
-        self.finish_up  = False
-        self.paused     = False
 
         self.new_fusion  = False
         self.new_imu     = False
@@ -472,7 +507,9 @@ class zmqWorkerGear():
         self.new_motion  = False
         self.timeout     = False
 
-        self.zmqTimeout = ZMQTIMEOUT
+        self.finish_up   = False
+        self.paused      = False
+        self.zmqTimeout  = ZMQTIMEOUT
 
         self.logger.log(logging.INFO, 'gearVRC zmqWorker initialized')
 
@@ -485,8 +522,8 @@ class zmqWorkerGear():
         self.new_button  = False
         self.new_motion  = False
 
-        context = zmq.Context()
-        poller  = zmq.Poller()
+        context = zmq.asyncio.Context()
+        poller  = zmq.asyncio.Poller()
         
         self.data_system  = None
         self.data_imu     = None
@@ -507,11 +544,11 @@ class zmqWorkerGear():
 
         self.logger.log(logging.INFO, 'gearVRC zmqWorker started on {}'.format(self.zmqPort))
 
-        while not stop_event.is_set():
+        while not self.finish_up:
             try:
-                events = dict(poller.poll(timeout=self.zmqTimeout))
+                events = dict(await poller.poll(timeout=self.zmqTimeout))
                 if socket in events and events[socket] == zmq.POLLIN:
-                    response = socket.recv_multipart()
+                    response = await socket.recv_multipart()
                     if len(response) == 2:
                         [topic, msg_packed] = response
                         if topic == b"system":
@@ -563,18 +600,47 @@ class zmqWorkerGear():
                     self.new_button = \
                     self.new_motion = False
 
-                if (self.new_imu or self.new_fusion or self.new_button or self.new_motion or self.new_virtual):
-                    if not self.paused:
-                        self.dataReady.set()
-                        self.new_system = \
-                        self.new_imu    = \
-                        self.new_virtual= \
-                        self.new_fusion = \
-                        self.new_button = \
-                        self.new_motion = False
+                if (self.new_imu and self.new_system):
+                    if self.data_system.fusion:
+                        if self.new_fusion:
+                            if self.data_system.motion:
+                                if self.new_motion:
+                                    if self.data_system.virtual:
+                                        if self.new_virtual:
+                                            if not self.paused: self.dataReady.set()
+                                            self.new_system  = \
+                                            self.new_button  = \
+                                            self.new_imu     = \
+                                            self.new_fusion  = \
+                                            self.new_virtual = \
+                                            self.new_motion  = False
+                                        else:
+                                            pass # just wait until we have virtual
+                                    else:
+                                        if not self.paused: self.dataReady.set()
+                                        self.new_system  = \
+                                        self.new_button  = \
+                                        self.new_imu     = \
+                                        self.new_fusion  = \
+                                        self.new_motion  = False
+                                else:
+                                    pass # wait for motion
+                            else:
+                                if not self.paused: self.dataReady.set()
+                                self.new_system  = \
+                                self.new_button  = \
+                                self.new_imu     = \
+                                self.new_fusion  = False
+                        else:
+                            pass # just wait until we have fusion data
+                    else:
+                        if not self.paused: self.dataReady.set()
+                        self.new_system  = \
+                        self.new_button  = \
+                        self.new_imu     = False
                 else:
-                    if not self.paused:
-                        pass
+                    pass # we need imu and system data, lets wiat for both
+                    
             except:
                 self.logger.log(logging.ERROR, 'gearVRC zmqWorker error')
                 poller.unregister(socket)
@@ -612,13 +678,25 @@ class zmqWorkerGear():
 
 class gearVRC:
             
-    def __init__(self, logger=None, 
-                  args=None) -> None:
-
-        # super(gearVRC, self).__init__()
+    def __init__(self, args, logger) -> None:
         
         self.args                               = args
 
+        # Shared States
+        self.fusion                             = args.fusion
+        self.motion                             = args.motion
+        self.report                             = args.report
+
+        # ZMQ
+        self.zmqPortPUB                         = args.zmqPortPUB
+        self.zmqPortREP                         = args.zmqPortREP
+
+        # Serial
+        self.serialport                         = args.serial
+        self.baudrate                           = args.baud
+        if self.serialport is not None: self.serial = True
+        else:                           self.serial = False
+        
         # Bluetooth device description
         self.device_name                        = args.name
         self.device_address                     = args.address
@@ -657,16 +735,14 @@ class gearVRC:
         
         # Signals
         self.lost_connection            = asyncio.Event()
-        # self.dataAvailable            = asyncio.Event()
         self.processedDataAvailable     = asyncio.Event()
-        # self.virtualDataAvailable     = asyncio.Event()
-        # self.fusedDataAvailable       = asyncio.Event()
-        # self.reportingDataAvailable   = asyncio.Event()
         self.terminate                  = asyncio.Event()
+
         # These Signals are easier to deal with without Event
         self.connected                  = False
         self.sensorStarted              = False
         self.finish_up                  = False
+        self.paused                     = False
         
         if logger is not None: self.logger = logger
         else:                  self.logger = logging.getLogger('gearVRC')
@@ -745,7 +821,6 @@ class gearVRC:
         ###################
         self.startTime              = 0.
         self.runTime                = 0.
-        
     
         self.data_deltaTime         = 0.
         self.data_rate              = 0
@@ -783,13 +858,14 @@ class gearVRC:
         self.serial_deltaTime       = 0.
         self.serial_updateCounts    = 0
         
-        self.zmq_rate               = 0
-        self.zmq_deltaTime          = 0.
-        self.zmq_updateCounts       = 0
-        self.zmq_lastTimeRate       = time.perf_counter()
+        self.zmqPUB_rate            = 0
+        self.zmqPUB_deltaTime       = 0.
+        self.zmqPUB_updateCounts    = 0
+        self.zmqPUB_lastTimeRate    = time.perf_counter()
         
         self.current_directory = str(pathlib.Path(__file__).parent.absolute())
 
+        # Read Calibration Data
         my_file = pathlib.Path(self.current_directory + '/Gyr.json')
         if my_file.is_file():
             self.logger.log(logging.INFO,'Loading Gyroscope Calibration from File...')
@@ -820,6 +896,7 @@ class gearVRC:
         self.acc_offset    = Vector3D(acc_offset)
         self.gyr_offset    = Vector3D(gyr_offset)
         self.mag_offset    = Vector3D(mag_offset)
+        
         self.acc_crosscorr = acc_crosscorr
         self.gyr_crosscorr = gyr_crosscorr
         self.mag_crosscorr = mag_crosscorr
@@ -859,6 +936,7 @@ class gearVRC:
         self.firstTimeData     = True  # want to initialize average acc,mag,gyr with current reading first time
         self.sensorIsBooting   = True  # need to read sensor a few times until we get reasonable data
         self.sensorRunInCounts = 0     # for boot up
+        self.motionIsBooting   = True  # need to establish averages until we run motion
 
     def update_times(self):
         self.home_pressedTime       = \
@@ -869,7 +947,7 @@ class gearVRC:
         self.fusion_lastTimeRate    = \
         self.previous_fusionTime    = \
         self.report_lastTimeRate    = \
-        self.zmq_lastTimeRate       = \
+        self.zmqPUB_lastTimeRate       = \
         self.motion_lastTimeRate    = \
         self.previous_motionTime    = \
         self.firstTimeMotion        = time.perf_counter()
@@ -880,7 +958,7 @@ class gearVRC:
         self.connected=False
         self.lost_connection.set()
 
-    async def update_connect(self):
+    async def connect_loop(self):
         '''
         An attempt to remain connected with the device.
         
@@ -1263,7 +1341,7 @@ class gearVRC:
         
         # Time:
         #  There are three time stamps:
-        #  Not sure which belongs to which. 
+        #  Not sure which belongs to which sensor unit. 
         #   accelerometer is usually read faster than magnetometer, 
         #   gyroscope and accelerometer are usually on the same chip
         #   assuming earliest time stamp is the IMU time stamp
@@ -1312,6 +1390,7 @@ class gearVRC:
         self.magZ = struct.unpack('<h', data[52:54])[0] * 0.06           #
 
         # Rearrange the Axes
+        # ------------------
         #
         # It was found for gearVRC when holding device and pointing forward:
         # acc.x points to the left/west
@@ -1319,7 +1398,7 @@ class gearVRC:
         # acc.z points downwards
         #
         # mag.x points to the user
-        # mag.y points to the right/left
+        # mag.y points to the right
         # mag.z points downwards
         #
         # gyr.x is counter clockwise around acc.x
@@ -1332,19 +1411,19 @@ class gearVRC:
         #   acc.x pointing forward      -acc.y
         #   acc.y pointing to the right -acc.x
         #   acc.z pointing downwards     acc.z
-        #   mag.x pointing forward      -mag.y
-        #   mag.y pointing to the right  mag.x
+        #   mag.x pointing forward      -mag.x
+        #   mag.y pointing to the right  mag.y
         #   mag.z pointing down          mag.z
         #   gyr.x clock wise forward     gyr.y
         #   gyr.y clockwise to the right gyr.x
         #   gyr.z clockwise downwards   -gyr.z
         # Or in short summary:
         #   acc -Y-X+Z
-        #   gyr +Y+X-Z        
         #   mag -X+Y+Z
+        #   gyr +Y+X-Z
         self.acc = Vector3D(-self.accY, -self.accX,  self.accZ)
-        self.gyr = Vector3D( self.gyrY,  self.gyrX, -self.gyrZ)
         self.mag = Vector3D(-self.magX,  self.magY,  self.magZ)
+        self.gyr = Vector3D( self.gyrY,  self.gyrX, -self.gyrZ)
 
         if self.firstTimeData:
             self.firstTimeData = False        
@@ -1592,83 +1671,90 @@ class gearVRC:
             self.data_lastTimeRate = copy(startTime)
             self.data_updateCounts = 0
 
-        # Process the Data
-        ###############################################################
-        if not self.sensorIsBooting:
-
-            if (len(data) >= 60):
-
-                # Decode
-                ###############################################################
-                self.decode_data(data)
-
-                # ESC sequence
-                ###############################################################
-                if self.check_ESC_sequence():
-                    self.logger.log(logging.INFO, 'ESC detected')
-                    self.terminate.set()
-                        
-                # Virtual
-                ###############################################################
-                if self.args.virtual:
-                    # We throttle the update rate of the virtual features
-                    if startTime - self.previous_virtualUpdate >= self.virtual_updateInterval:
-                        self.previous_virtualUpdate = copy(startTime)
-                        #
-                        start_virtualUpdate = time.perf_counter()
-                        self.virtual_updateCounts += 1
-                        if (startTime - self.virtual_lastTimeRate)>= 1.:
-                            self.virtual_rate = copy(self.virtual_updateCounts)
-                            self.virtual_lastTimeRate = copy(startTime)
-                            self.virtual_updateCounts = 0
-                        #
-                        self.compute_virtual()
-
-                        self.virtual_deltaTime = time.perf_counter() - start_virtualUpdate
-
-                # Fusion
-                ###############################################################
-                if self.args.fusion:
-                    # update interval
-                    start_fusionUpdate = time.perf_counter()
-                    # fps
-                    self.fusion_updateCounts += 1
-                    if (startTime - self.fusion_lastTimeRate)>= 1.:
-                        self.fusion_rate = copy(self.fusion_updateCounts)
-                        self.fusion_lastTimeRate = copy(startTime)
-                        self.fusion_updateCounts = 0
-                    #
-                    self.compute_fusion()
-                    self.fusion_deltaTime = time.perf_counter() - start_fusionUpdate
-
-                # Motion
-                ###############################################################
-                if self.args.motion:
-                    # update interval
-                    start_motionUpdate = time.perf_counter()
-                    # fps
-                    self.motion_updateCounts += 1
-                    if (startTime - self.motion_lastTimeRate)>= 1.:
-                        self.motion_rate = copy(self.motion_updateCounts)
-                        self.motion_lastTimeRate = copy(startTime)
-                        self.motion_updateCounts = 0
-                        
-                    # we need some time to compute averages, once system is stable start compute motion.
-                    if start_motionUpdate - self.firstTimeMotion > 5.0:
-                        self.compute_motion()
-
-                    self.motion_deltaTime = time.perf_counter() - start_motionUpdate
-
-            else:
-                self.logger.log(logging.ERROR, 'Not enough values: {}'.format(len(data)))
-                # switch to sensor mode
-                await self.start_sensor(VRMode = False)
-
-            self.processedDataAvailable.set()
+        if self.paused:
+            await asyncio.sleep(1) # allow other tasks to run
             
-            self.data_deltaTime = time.perf_counter() - startTime
+        else:
+            # Process the Data
+            ###############################################################
+            if not self.sensorIsBooting:
 
-        await asyncio.sleep(0) # allow other tasks to run
+                if (len(data) >= 60):
+
+                    # Decode
+                    ###############################################################
+                    self.decode_data(data)
+
+                    # ESC sequence
+                    ###############################################################
+                    if self.check_ESC_sequence():
+                        self.logger.log(logging.INFO, 'ESC detected')
+                        self.terminate.set()
+                            
+                    # Virtual
+                    ###############################################################
+                    if self.virtual:
+                        # We throttle the update rate of the virtual features
+                        if startTime - self.previous_virtualUpdate >= self.virtual_updateInterval:
+                            self.previous_virtualUpdate = copy(startTime)
+                            #
+                            start_virtualUpdate = time.perf_counter()
+                            self.virtual_updateCounts += 1
+                            if (startTime - self.virtual_lastTimeRate)>= 1.:
+                                self.virtual_rate = copy(self.virtual_updateCounts)
+                                self.virtual_lastTimeRate = copy(startTime)
+                                self.virtual_updateCounts = 0
+                            #
+                            self.compute_virtual()
+
+                            self.virtual_deltaTime = time.perf_counter() - start_virtualUpdate
+
+                    # Fusion
+                    ###############################################################
+                    if self.fusion:
+                        # update interval
+                        start_fusionUpdate = time.perf_counter()
+                        # fps
+                        self.fusion_updateCounts += 1
+                        if (startTime - self.fusion_lastTimeRate)>= 1.:
+                            self.fusion_rate = copy(self.fusion_updateCounts)
+                            self.fusion_lastTimeRate = copy(startTime)
+                            self.fusion_updateCounts = 0
+                        #
+                        self.compute_fusion()
+                        self.fusion_deltaTime = time.perf_counter() - start_fusionUpdate
+
+                    # Motion
+                    ###############################################################
+                    if self.motion:
+                        # update interval
+                        start_motionUpdate = time.perf_counter()
+                        # fps
+                        self.motion_updateCounts += 1
+                        if (startTime - self.motion_lastTimeRate)>= 1.:
+                            self.motion_rate = copy(self.motion_updateCounts)
+                            self.motion_lastTimeRate = copy(startTime)
+                            self.motion_updateCounts = 0
+                            
+                        if not self.motionIsBooting:
+                            # we need some time to compute averages, once system is stable start compute motion.
+                            self.compute_motion()
+                        else:
+                            if start_motionUpdate - self.firstTimeMotion > 5.0:
+                                self.motionIsBooting = False
+                                
+                        self.motion_deltaTime = time.perf_counter() - start_motionUpdate
+
+                else:
+                    self.logger.log(logging.ERROR, 'Not enough values: {}'.format(len(data)))
+                    # switch to sensor mode
+                    await self.start_sensor(VRMode = False)
+
+                self.processedDataAvailable.set()
+                
+                self.data_deltaTime = time.perf_counter() - startTime
+
+            await asyncio.sleep(0) # allow other tasks to run
 
 
     def handle_batteryData(self, characteristic: BleakGATTCharacteristic, data: bytearray):
@@ -1681,7 +1767,7 @@ class gearVRC:
     # gearVRC Tasks
     ##############################################################################################
 
-    async def keep_alive(self):
+    async def keep_alive_loop(self):
         '''
         Periodically send Keep Alive commands
         Does not prevent disconnection when device is left idle
@@ -1693,7 +1779,7 @@ class gearVRC:
 
             # print('K', end='', flush=True)
 
-            if self.client is not None and self.connected and self.sensorStarted:
+            if (self.client is not None) and self.connected and self.sensorStarted and (not self.paused):
                 await self.client.write_gatt_char(self.controller_command_characteristics,CMD_KEEP_ALIVE)
                 # self.logger.log(logging.DEBUG,'Keep alive sent')        
                 sleepTime=KEEPALIVEINTERVAL
@@ -1727,7 +1813,7 @@ class gearVRC:
         self.logger.log(logging.INFO, 'Gyroscope Bias Saving Task stopped')
 
 
-    async def update_report(self):
+    async def report_loop(self):
         '''
         Report latest fused data
         Adapt report to whether fusion, virtual, serial or zmq is enabled 
@@ -1747,214 +1833,222 @@ class gearVRC:
 
             startTime = time.perf_counter()
 
-            self.report_updateCounts += 1
-            if (startTime - self.report_lastTimeRate)>= 1.:
-                self.report_rate = copy(self.report_updateCounts)
-                self.report_lastTimeRate = time.perf_counter()
-                self.report_updateCounts = 0
-
-            # Display the Data
-            msg_out = '-------------------------------------------------\n'
-            if self.args.report > 1:
-                msg_out+= 'gearVR Ctr: Temp {:>4.1f}, Bat {:>3d}, HighRes:{}, Moving:{}, Mag:{}\n'.format(
-                                                    self.temperature, self.battery_level, 
-                                                    'Y' if self.HighResMode else 'N',
-                                                    'Y' if self.moving else 'N',
-                                                    'Y' if self.magok else 'N'
-                                                    )
-            else:
-                msg_out+= 'gearVR Ctr: Temp {:>4.1f}, Bat {:>3d}, Moving:{}, Mag:{}\n'.format(
-                                                    self.temperature, self.battery_level,
-                                                    'Y' if self.moving else 'N',
-                                                    'Y' if self.magok else 'N')
+            if (self.report > 0) and (not self.paused):
                 
-            msg_out+= '-------------------------------------------------\n'
+                self.report_updateCounts += 1
+                if (startTime - self.report_lastTimeRate)>= 1.:
+                    self.report_rate = copy(self.report_updateCounts)
+                    self.report_lastTimeRate = time.perf_counter()
+                    self.report_updateCounts = 0
 
-            if self.args.report > 0:
+                # Display the Data
+                msg_out  = '\033[2J\n'
+                msg_out += '-------------------------------------------------\n'
+                if self.report > 1:
+                    msg_out+= 'gearVR Ctr: Temp {:>4.1f}, Bat {:>3d}, HighRes:{}, Moving:{}, Mag:{}\n'.format(
+                                                        self.temperature, self.battery_level, 
+                                                        'Y' if self.HighResMode else 'N',
+                                                        'Y' if self.moving else 'N',
+                                                        'Y' if self.magok else 'N'
+                                                        )
+                else:
+                    msg_out+= 'gearVR Ctr: Temp {:>4.1f}, Bat {:>3d}, Moving:{}, Mag:{}\n'.format(
+                                                        self.temperature, self.battery_level,
+                                                        'Y' if self.moving else 'N',
+                                                        'Y' if self.magok else 'N')
+                msg_out+= '-------------------------------------------------\n'
+
                 msg_out+= 'Data    {:>10.6f}, {:>3d}/s\n'.format(self.data_deltaTime*1000.,        self.data_rate)
                 msg_out+= 'Report  {:>10.6f}, {:>3d}/s\n'.format(self.report_deltaTime*1000.,      self.report_rate)
-                if self.args.virtual:
+                if self.virtual:
                     msg_out+= 'Virtual {:>10.6f}, {:>3d}/s\n'.format(self.virtual_deltaTime*1000., self.virtual_rate)
-                if self.args.fusion:
+                if self.fusion:
                     msg_out+= 'Fusion  {:>10.6f}, {:>3d}/s\n'.format(self.fusion_deltaTime*1000.,  self.fusion_rate)
-                if self.args.serial is not None:
+                if self.serial is not None:
                     msg_out+= 'Serial  {:>10.6f}, {:>3d}/s\n'.format(self.serial_deltaTime*1000.,  self.serial_rate)
-                if self.args.zmqport is not None:
-                    msg_out+= 'ZMQ     {:>10.6f}, {:>3d}/s\n'.format(self.zmq_deltaTime*1000.,     self.zmq_rate)
-
+                if self.zmqPortPUB is not None:
+                    msg_out+= 'ZMQ     {:>10.6f}, {:>3d}/s\n'.format(self.zmqPUB_deltaTime*1000.,  self.zmqPUB_rate)
                 msg_out+= '-------------------------------------------------\n'
 
-            if self.args.report > 1:
-                # print('R1', end='', flush=True)
-                # msg_out+= 'Time  {:>10.6f}, {:>10.6f}, {:>10.6f}\n'.format(self.sensorTime, self.aTime, self.bTime)
-                # msg_out+= 'dt    {:>10.6f}, {:>10.6f}, {:>10.6f}\n'.format(self.delta_sensorTime, self.delta_aTime, self.delta_bTime)
-                msg_out+= 'Time  {:>10.6f}, dt {:>10.6f}\n'.format(self.sensorTime, self.delta_sensorTime)
-
-                msg_out+= 'Accel     {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.acc.x,self.acc.y,self.acc.z)
-                msg_out+= 'Gyro      {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.gyr.x,self.gyr.y,self.gyr.z)
-                msg_out+= 'Magno     {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.mag.x,self.mag.y,self.mag.z)
-                msg_out+= 'Accel avg {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.acc_average.x, self.acc_average.y, self.acc_average.z, self.acc_average.norm)
-                msg_out+= 'Gyro  avg {:>8.3f} {:>8.3f} {:>8.3f} RPM:{:>8.3f}\n'.format(self.gyr_average.x, self.gyr_average.y, self.gyr_average.z, self.gyr_average.norm*60./TWOPI)
-                msg_out+= 'Gyro bias {:>8.3f} {:>8.3f} {:>8.3f} RPM:{:>8.3f}\n'.format(self.gyr_offset.x, self.gyr_offset.y, self.gyr_offset.z, self.gyr_offset.norm*60./TWOPI)
-                msg_out+= 'Moving:   {}\n'.format('Y' if self.moving else 'N')
-
-                msg_out+= '-------------------------------------------------\n'
-                # print('R2', end='', flush=True)
-
-                msg_out+= 'Trig:{} Touch:{} Back:{} Home:{}, Vol+:{} Vol-:{} Any:{}\n'.format(
-                                                    'Y' if self.trigger     else 'N', 
-                                                    'Y' if self.touch       else 'N', 
-                                                    'Y' if self.back        else 'N',
-                                                    'Y' if self.home        else 'N',
-                                                    'Y' if self.volume_up   else 'N',
-                                                    'Y' if self.volume_down else 'N',
-                                                    'N' if self.noButton    else 'Y')
-
-                msg_out+= '-------------------------------------------------\n'
-
-                # print('R3', end='', flush=True)
-                msg_out+= 'TPad:  {:>3d},{:>3d}\n'.format(self.touchX, self.touchY)
-
-                if self.args.virtual:
-                    msg_out+= 'VPad:  {:>3d},{:>3d} U{} D{} L{} R{}\n'.format(
-                                                        self.absX, self.absY,
-                                                        'Y' if self.dirUp    else 'N',
-                                                        'Y' if self.dirDown  else 'N',
-                                                        'Y' if self.dirLeft  else 'N',
-                                                        'Y' if self.dirRight else 'N')
-                    
-                    msg_out+= 'Wheel: {:>3d}:{:>3d} T{} B{} L{} R{} C{} R:{}\n'.format(
-                                                        self.wheelPos, self.delta_wheelPos,
-                                                        'Y' if self.top    else 'N',
-                                                        'Y' if self.bottom else 'N',
-                                                        'Y' if self.left   else 'N',
-                                                        'Y' if self.right  else 'N',
-                                                        'Y' if self.center else 'N', 
-                                                        (' C' if self.clockwise else 'CC') if self.isRotating else '__')
-
+                if self.report > 1:
+                    # print('R1', end='', flush=True)
+                    # msg_out+= 'Time  {:>10.6f}, {:>10.6f}, {:>10.6f}\n'.format(self.sensorTime, self.aTime, self.bTime)
+                    # msg_out+= 'dt    {:>10.6f}, {:>10.6f}, {:>10.6f}\n'.format(self.delta_sensorTime, self.delta_aTime, self.delta_bTime)
+                    msg_out+= 'Time  {:>10.6f}, dt {:>10.6f}\n'.format(self.sensorTime, self.delta_sensorTime)
+                    msg_out+= 'Accel     {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.acc.x,self.acc.y,self.acc.z)
+                    msg_out+= 'Gyro      {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.gyr.x,self.gyr.y,self.gyr.z)
+                    msg_out+= 'Magno     {:>8.3f} {:>8.3f} {:>8.3f}\n'.format(self.mag.x,self.mag.y,self.mag.z)
+                    msg_out+= 'Accel avg {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.acc_average.x, self.acc_average.y, self.acc_average.z, self.acc_average.norm)
+                    msg_out+= 'Gyro  avg {:>8.3f} {:>8.3f} {:>8.3f} RPM:{:>8.3f}\n'.format(self.gyr_average.x, self.gyr_average.y, self.gyr_average.z, self.gyr_average.norm*60./TWOPI)
+                    msg_out+= 'Gyro bias {:>8.3f} {:>8.3f} {:>8.3f} RPM:{:>8.3f}\n'.format(self.gyr_offset.x, self.gyr_offset.y, self.gyr_offset.z, self.gyr_offset.norm*60./TWOPI)
+                    msg_out+= 'Moving:   {}\n'.format('Y' if self.moving else 'N')
                     msg_out+= '-------------------------------------------------\n'
+                    # print('R2', end='', flush=True)
 
-                # print('R4', end='', flush=True)
-                if self.args.fusion:
-
-                    msg_out+= 'Acc     {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.acc_cal.x,self.acc_cal.y,self.acc_cal.z,self.acc_cal.norm)
-                    msg_out+= 'Gyr     {:>8.3f} {:>8.3f} {:>8.3f} RPM:{:>8.3f}\n'.format(self.gyr_cal.x,self.gyr_cal.y,self.gyr_cal.z,self.gyr_cal.norm*60./TWOPI)
-                    msg_out+= 'Mag     {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.mag_cal.x,self.mag_cal.y,self.mag_cal.z,self.mag_cal.norm)
-                    msg_out+= 'Euler: R{:>6.1f} P{:>6.1f} Y{:>6.1f}, Heading {:>4.0f}\n'.format(
-                                                    self.rpy.x*RAD2DEG, self.rpy.y*RAD2DEG, self.rpy.z*RAD2DEG, 
-                                                    self.heading*RAD2DEG)
-                    msg_out+= 'Q:     W{:>6.3f} X{:>6.3f} Y{:>6.3f} Z{:>6.3f}\n'.format(
-                                                    self.q.w, self.q.x, self.q.y, self.q.z)
-                    
-                    msg_out+= 'Using Mag in AHRS: {}\n'.format('Y' if self.magok else 'N')
-
-                #print('R5', end='', flush=True)
-                if self.args.motion:
+                    msg_out+= 'Trig:{} Touch:{} Back:{} Home:{}, Vol+:{} Vol-:{} Any:{}\n'.format(
+                                                        'Y' if self.trigger     else 'N', 
+                                                        'Y' if self.touch       else 'N', 
+                                                        'Y' if self.back        else 'N',
+                                                        'Y' if self.home        else 'N',
+                                                        'Y' if self.volume_up   else 'N',
+                                                        'Y' if self.volume_down else 'N',
+                                                        'N' if self.noButton    else 'Y')
                     msg_out+= '-------------------------------------------------\n'
-                    # print('R6a', end='', flush=True)
+                    # print('R3', end='', flush=True)
+                    msg_out+= 'TPad:  {:>3d},{:>3d}\n'.format(self.touchX, self.touchY)
 
-                    msg_out+= 'Residual {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.residuals.x,self.residuals.y,self.residuals.z,self.residuals.norm)
-                    msg_out+= 'Vel      {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.velocity.x,self.velocity.y,self.velocity.z,self.velocity.norm)
-                    msg_out+= 'Pos      {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.position.x,self.position.y,self.position.z,self.position.norm)
-                    msg_out+= 'Vel Bias {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.velocityBias.x,self.velocityBias.y,self.velocityBias.z,self.velocityBias.norm)
-                    msg_out+= 'Acc Bias {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.accBias.x,self.accBias.y,self.accBias.z,self.accBias.norm)
-                    # print('R6', end='', flush=True)
-                    msg_out+= 'dt       {:>10.6f} s {:>10.6f} ms\n'.format(self.dtmotion, self.dt*1000.)
+                    if self.virtual:
+                        msg_out+= 'VPad:  {:>3d},{:>3d} U{} D{} L{} R{}\n'.format(
+                                                            self.absX, self.absY,
+                                                            'Y' if self.dirUp    else 'N',
+                                                            'Y' if self.dirDown  else 'N',
+                                                            'Y' if self.dirLeft  else 'N',
+                                                            'Y' if self.dirRight else 'N')
+                        
+                        msg_out+= 'Wheel: {:>3d}:{:>3d} T{} B{} L{} R{} C{} R:{}\n'.format(
+                                                            self.wheelPos, self.delta_wheelPos,
+                                                            'Y' if self.top    else 'N',
+                                                            'Y' if self.bottom else 'N',
+                                                            'Y' if self.left   else 'N',
+                                                            'Y' if self.right  else 'N',
+                                                            'Y' if self.center else 'N', 
+                                                            (' C' if self.clockwise else 'CC') if self.isRotating else '__')
 
-                #print('R6', end='', flush=True)
-            print(msg_out, flush=True)
+                        msg_out+= '-------------------------------------------------\n'
 
-            self.report_deltaTime = time.perf_counter() - startTime
+                    # print('R4', end='', flush=True)
+                    if self.fusion:
+                        msg_out+= 'Acc     {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.acc_cal.x,self.acc_cal.y,self.acc_cal.z,self.acc_cal.norm)
+                        msg_out+= 'Gyr     {:>8.3f} {:>8.3f} {:>8.3f} RPM:{:>8.3f}\n'.format(self.gyr_cal.x,self.gyr_cal.y,self.gyr_cal.z,self.gyr_cal.norm*60./TWOPI)
+                        msg_out+= 'Mag     {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.mag_cal.x,self.mag_cal.y,self.mag_cal.z,self.mag_cal.norm)
+                        msg_out+= 'Euler: R{:>6.1f} P{:>6.1f} Y{:>6.1f}, Heading {:>4.0f}\n'.format(
+                                                        self.rpy.x*RAD2DEG, self.rpy.y*RAD2DEG, self.rpy.z*RAD2DEG, 
+                                                        self.heading*RAD2DEG)
+                        msg_out+= 'Q:     W{:>6.3f} X{:>6.3f} Y{:>6.3f} Z{:>6.3f}\n'.format(
+                                                        self.q.w, self.q.x, self.q.y, self.q.z)
+                        
+                        msg_out+= 'Using Mag in AHRS: {}\n'.format('Y' if self.magok else 'N')
 
-            # Wait to next interval time
-            sleepTime = self.report_updateInterval - (time.perf_counter() - startTime)
-            await asyncio.sleep(max(0.,sleepTime))
-            timingError = time.perf_counter() - startTime - self.report_updateInterval
-            self.report_updateInterval = max(0., REPORTINTERVAL - timingError)
+                    #print('R5', end='', flush=True)
+                    if self..motion:
+                        msg_out+= '-------------------------------------------------\n'
+                        # print('R6a', end='', flush=True)
+                        msg_out+= 'Residual {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.residuals.x,self.residuals.y,self.residuals.z,self.residuals.norm)
+                        msg_out+= 'Vel      {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.velocity.x,self.velocity.y,self.velocity.z,self.velocity.norm)
+                        msg_out+= 'Pos      {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.position.x,self.position.y,self.position.z,self.position.norm)
+                        msg_out+= 'Vel Bias {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.velocityBias.x,self.velocityBias.y,self.velocityBias.z,self.velocityBias.norm)
+                        msg_out+= 'Acc Bias {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.accBias.x,self.accBias.y,self.accBias.z,self.accBias.norm)
+                        # print('R6', end='', flush=True)
+                        msg_out+= 'dt       {:>10.6f} s {:>10.6f} ms\n'.format(self.dtmotion, self.dt*1000.)
 
+                    #print('R6', end='', flush=True)
+                print(msg_out, flush=True)
+
+                self.report_deltaTime = time.perf_counter() - startTime
+
+                # Wait to next interval time
+                sleepTime = self.report_updateInterval - (time.perf_counter() - startTime)
+                await asyncio.sleep(max(0.,sleepTime))
+                timingError = time.perf_counter() - startTime - self.report_updateInterval
+                self.report_updateInterval = max(0., REPORTINTERVAL - timingError)
+
+            else:
+
+                # check every second if reporting is turned back on or unpaused
+                await asyncio.sleep(1.0)
+                
         self.logger.log(logging.INFO, 'Reporting stopped')
 
-    async def update_serial(self):
+    async def serial_loop(self):
         '''
         Report latest fused data over serial connection
         This is formatted for freeIMU calibration GUI software
         '''
-        self.logger.log(logging.INFO, 'Creating serial reader and writer with {} at {} baud...'.format(self.args.serial, self.args.baud))
-        reader, writer = await serial_asyncio.open_serial_connection(url=self.args.serial, baudrate=self.args.baud)
 
-        # writer.write('Welcome to gearVRC\r\n'.encode())
+        if self.args.serial is not None:
+       
+            self.logger.log(logging.INFO, 'Creating serial reader and writer with {} at {} baud...'.format(self.serialport, self.baudrate))
+            reader, writer = await serial_asyncio.open_serial_connection(url=self.serialport, baudrate=self.baudrate)
+
+            # writer.write('Welcome to gearVRC\r\n'.encode())
         
-        while not self.finish_up:
+            while not self.finish_up:
 
-            # print('S', end='', flush=True)
-
-            msg_in = await reader.readline() # read a full line, needs to have /n at end of line (Ctrl-J in putty)
-            line_in = msg_in.decode().strip()
-            if len(line_in) > 0:
-                if 'v' in line_in: # version number request
-                    writer.write("gearVRC v1.0.0\r\n".encode())
-
-                elif 'x' in line_in:
-                    self.logger.log(logging.INFO,'We dont have EEPROM')
-
-                elif 'c' in line_in:
-                    self.logger.log(logging.INFO,'We dont have EEPROM')
-
-                elif 'C' in line_in:
-                    self.logger.log(logging.INFO,'We dont have EEPROM')
-                    writer.write('N.A.\r\n')
-                    writer.write('N.A.\r\n')
-                    writer.write('N.A.\r\n')
-                    writer.write('N.A.\r\n')
-                else:
-                    # check if b command was present
-                    # extract number of readings requested
-                    match_b = re.search(r'b(\d+)', line_in)
-                    if match_b:
-                        count = int(match_b.group(1))
-                        
-                        startTime = time.perf_counter()
-                        self.serial_updateCounts = 0
-
-                        for i in range(count):
-
-                            await self.processedDataAvailable.wait()
-                            self.processedDataAvailable.clear()
-
-                            self.serial_updateCounts += 1
-                        
-                            accX_hex=float_to_hex(self.acc.x)
-                            accY_hex=float_to_hex(self.acc.y)
-                            accZ_hex=float_to_hex(self.acc.z)
-
-                            gyrX_hex=float_to_hex(self.gyr.x)
-                            gyrY_hex=float_to_hex(self.gyr.y)
-                            gyrZ_hex=float_to_hex(self.gyr.z)
-
-                            magX_hex=float_to_hex(self.mag.x)
-                            magY_hex=float_to_hex(self.mag.y)
-                            magZ_hex=float_to_hex(self.mag.z)
-
-                            # acc,gyr,mag
-                            line_out = accX_hex + accY_hex + accZ_hex + \
-                                       gyrX_hex + gyrY_hex + gyrZ_hex + \
-                                       magX_hex + magY_hex + magZ_hex + '\r\n'
-                            msg_out=line_out.encode()
-                            writer.write(msg_out)
-
-                        self.serial_deltaTime = time.perf_counter() - startTime
-                        self.serial_rate = int(self.serial_updateCounts / self.serial_deltaTime)
-                        self.serial_updateCounts = 0
-                    else:
-                        pass # unknown command
-            else:
-                pass # empty line received
-
-            await asyncio.sleep(0)
+                # print('S', end='', flush=True)
                 
+                msg_in = await reader.readline() # read a full line, needs to have /n at end of line (Ctrl-J in putty)
+                if self.serial:
+                    line_in = msg_in.decode().strip()
+                    if len(line_in) > 0:
+                        if 'v' in line_in: # version number request
+                            writer.write("gearVRC v1.0.0\r\n".encode())
+
+                        elif 'x' in line_in:
+                            self.logger.log(logging.INFO,'We dont have EEPROM')
+
+                        elif 'c' in line_in:
+                            self.logger.log(logging.INFO,'We dont have EEPROM')
+
+                        elif 'C' in line_in:
+                            self.logger.log(logging.INFO,'We dont have EEPROM')
+                            writer.write('N.A.\r\n')
+                            writer.write('N.A.\r\n')
+                            writer.write('N.A.\r\n')
+                            writer.write('N.A.\r\n')
+                        else:
+                            # check if b command was present
+                            # extract number of readings requested
+                            match_b = re.search(r'b(\d+)', line_in)
+                            if match_b:
+                                count = int(match_b.group(1))
+                                
+                                startTime = time.perf_counter()
+                                self.serial_updateCounts = 0
+
+                                for i in range(count):
+
+                                    await self.processedDataAvailable.wait()
+                                    self.processedDataAvailable.clear()
+
+                                    self.serial_updateCounts += 1
+                                
+                                    accX_hex=float_to_hex(self.acc.x)
+                                    accY_hex=float_to_hex(self.acc.y)
+                                    accZ_hex=float_to_hex(self.acc.z)
+
+                                    gyrX_hex=float_to_hex(self.gyr.x)
+                                    gyrY_hex=float_to_hex(self.gyr.y)
+                                    gyrZ_hex=float_to_hex(self.gyr.z)
+
+                                    magX_hex=float_to_hex(self.mag.x)
+                                    magY_hex=float_to_hex(self.mag.y)
+                                    magZ_hex=float_to_hex(self.mag.z)
+
+                                    # acc,gyr,mag
+                                    line_out = accX_hex + accY_hex + accZ_hex + \
+                                            gyrX_hex + gyrY_hex + gyrZ_hex + \
+                                            magX_hex + magY_hex + magZ_hex + '\r\n'
+                                    msg_out=line_out.encode()
+                                    writer.write(msg_out)
+
+                                self.serial_deltaTime = time.perf_counter() - startTime
+                                self.serial_rate = int(self.serial_updateCounts / self.serial_deltaTime)
+                                self.serial_updateCounts = 0
+                            else:
+                                pass # unknown command
+                    else:
+                        pass # empty line received
+                    await asyncio.sleep(0)
+                else:
+                    await asyncio.sleep(1.0) # wait until serial is turned on
+            # end while loop
+        else:
+            self.logger.log(logging.INFO, 'No serial reader and writer ...')
+            self.serial = False
+            
         self.logger.log(logging.INFO, 'Serial stopped')
     
-    async def update_zmq(self):
+    async def zmqPUB_loop(self):
         '''
         Report data on ZMQ socket
         There are 6 data packets presented:
@@ -1980,8 +2074,8 @@ class gearVRC:
         data_fusion  = gearFusionData()
         data_motion  = gearMotionData()
 
-        self.zmq_lastTimeRate   = time.perf_counter()
-        self.zmq_updateCounts   = 0
+        self.zmqPUB_lastTimeRate   = time.perf_counter()
+        self.zmqPUB_updateCounts   = 0
 
         while not self.finish_up:
 
@@ -1993,18 +2087,20 @@ class gearVRC:
             self.processedDataAvailable.clear()
 
             # fps
-            self.zmq_updateCounts += 1
-            if (startTime - self.zmq_lastTimeRate)>= 1.:
-                self.zmq_rate = copy(self.zmq_updateCounts)
-                self.zmq_lastTimeRate = copy(startTime)
-                self.zmq_updateCounts = 0
+            self.zmqPUB_updateCounts += 1
+            if (startTime - self.zmqPUB_lastTimeRate)>= 1.:
+                self.zmqPUB_rate = copy(self.zmqPUB_updateCounts)
+                self.zmqPUB_lastTimeRate = copy(startTime)
+                self.zmqPUB_updateCounts = 0
 
             # format the imu data
             # these are the axis flipped but not calibrated data
-            data_imu.time = self.sensorTime
-            data_imu.acc  = self.acc
-            data_imu.gyr  = self.gyr
-            data_imu.mag  = self.mag
+            data_imu.time   = self.sensorTime
+            data_imu.acc    = self.acc
+            data_imu.gyr    = self.gyr
+            data_imu.mag    = self.mag
+            data_imu.moving = self.moving
+            data_imu.magok  = self.magok
             imu_msgpack = msgpack.packb(obj2dict(vars(data_imu)))
             socket.send_multipart([b"imu", imu_msgpack])               
             # print('Zimu', end='', flush=True)
@@ -2036,15 +2132,18 @@ class gearVRC:
             data_system.data_rate      = self.data_rate
             data_system.virtual_rate   = self.virtual_rate
             data_system.fusion_rate    = self.fusion_rate
-            data_system.zmq_rate       = self.zmq_rate
+            data_system.zmq_rate       = self.zmqPUB_rate
             data_system.serial_rate    = self.serial_rate
             data_system.reporting_rate = self.report_rate
+            data_system.fusion         = self.fusion
+            data_system.virtual        = self.virtual
+            data_system.motion         = self.motion
+            data_system.serial         = self.serial
             system_msgpack = msgpack.packb(obj2dict(vars(data_system)))
             socket.send_multipart([b"system", system_msgpack])               
             # print('Zsys', end='', flush=True)
 
-            if self.args.virtual:
-                
+            if self.virtual:
                 # format the virtual data (wheel and touchpad)
                 data_virtual.time       = self.sensorTime
                 data_virtual.absX       = self.absX
@@ -2065,8 +2164,7 @@ class gearVRC:
                 socket.send_multipart([b"virtual", virtual_msgpack])
                 # print('Zvirt', end='', flush=True)
 
-            if self.args.fusion:
-
+            if self.fusion:
                 # report fusion data
                 data_fusion.time = self.sensorTime
                 data_fusion.acc  = self.acc_cal
@@ -2079,7 +2177,7 @@ class gearVRC:
                 socket.send_multipart([b"fusion", fusion_msgpack])   
                 # print('Zfuse', end='', flush=True)
                 
-            if self.args.motion:
+            if self.motion:
                 data_motion.time      = self.sensorTime
                 data_motion.accBias   = self.accBias
                 data_motion.velocityBias = self.velocityBias
@@ -2092,13 +2190,118 @@ class gearVRC:
                 # print('Zmotion', end='', flush=True)
 
             # update interval
-            self.zmq_deltaTime = time.perf_counter() - startTime
+            self.zmqPUB_deltaTime = time.perf_counter() - startTime
 
             await asyncio.sleep(0)
 
         self.logger.log(logging.INFO, 'ZMQ stopped')
+
+    async def zmqREP_loop(self):
+        '''
+        Handle program control
+        - fusion on/off
+        - motion on/off
+        - report on/off
+        - virtual on/off
+        - serial on/off
+        - stop
+        '''
+
+        context = zmq.asyncio.Context()
+        socket  = context.socket(zmq.REP)
+        socket.bind("tcp://*:{}".format(self.zmqPortREP))
+
+        poller = zmq.asyncio.Poller()
+        poller.register(socket, zmq.POLLIN)
+
+        self.logger.log(logging.INFO, 'Created ZMQ Request/Reply at \'tcp://*:{}\' ...'.format(self.zmqPortREP))
+
+        while not self.finish_up:
+
+            startTime = time.perf_counter()
             
-    async def handle_termination(self, tasks:None):
+            try: 
+                events = dict(await poller.poll(timeout=-1))
+                if socket in events and events[socket] == zmq.POLLIN:
+                    response = await socket.recv_multipart()
+                    if len(response) == 2:
+                        [topic, value] = response
+                        if topic == b"motion":
+                            if value == b"\x01":
+                                self.motion = \
+                                self.fusion = True
+                            else:
+                                self.motion = \
+                                self.fusion = False
+                            socket.send_string("OK")
+                            self.logger.log(logging.INFO, 'ZMQ motion received: {}'.format(value))
+                        elif topic == b"fusion":
+                            if value == b"\x01": self.fusion = True
+                            else:                self.fusion = False
+                            socket.send_string("OK")
+                            self.logger.log(logging.INFO, 'ZMQ fusion received: {}'.format(value))
+                        elif topic == b"report":
+                            self.report = int.from_bytes(value, byteorder='big', signed=True)
+                            socket.send_string("OK")
+                            self.logger.log(logging.INFO, 'ZMQ report received: {}'.format(value))
+                        elif topic == b"virtual":
+                            if value == b"\x01": self.virtual = True
+                            else:                self.virtual = False
+                            socket.send_string("OK")
+                            self.logger.log(logging.INFO, 'ZMQ fusion received: {}'.format(value))
+                        elif topic == b"serial":
+                            if value == b"\x01": self.serial = True
+                            else:                self.serial = False
+                            socket.send_string("OK")
+                            self.logger.log(logging.INFO, 'ZMQ fusion received: {}'.format(value))
+                        elif topic == b"stop":
+                            if value == b"\x01": 
+                                self.terminate.set()
+                                self.finish_up = True
+                            else:          
+                                self.terminate.clear()
+                                self.finish_up = False
+                            socket.send_string("OK")
+                            self.logger.log(logging.INFO, 'ZMQ stop received: {}'.format(value))
+                        elif topic == b"pause":
+                            if value == b"\x01": 
+                                self.paused=True
+                            else:          
+                                self.paused = False
+                            socket.send_string("OK")
+                            self.logger.log(logging.INFO, 'ZMQ pause received: {}'.format(value))
+                        elif topic == b"continue":
+                            if value == b"\x01": 
+                                self.paused = False
+                            else:          
+                                self.paused = True
+                            socket.send_string("OK")
+                            self.logger.log(logging.INFO, 'ZMQ continue received: {}'.format(value))
+                        else:
+                            socket.send_string("UNKNOWN")
+                            self.logger.log(logging.INFO, 'ZMQ received UNKNOWN')
+                    else:
+                        self.logger.log(logging.ERROR, 'ICM zmqWorker receiver malformed REQ message')
+                        socket.send_string("ERROR")
+
+            except:
+                self.logger.log(logging.ERROR, 'ICM zmqWorker REQ/REP error')
+                poller.unregister(socket)
+                socket.close()
+                socket = context.socket(zmq.REP)
+                socket.bind("tcp://*:{}".format(self.zmqPortREP))
+                poller.register(socket, zmq.POLLIN)
+            
+            await asyncio.sleep(0)
+                
+            # update interval
+            self.zmqREP_deltaTime = time.perf_counter() - startTime
+
+        self.logger.log(logging.INFO, 'ZMQ REQ/REP finished')
+        socket.close()
+        context.term()
+
+    async def handle_termination(self, tasks):
         '''
         Stop the while loops in the tasks
         Stop the sensor from producing data
@@ -2115,7 +2318,7 @@ class gearVRC:
                 if task is not None:
                     task.cancel()
 
-    async def update_terminator(self, tasks):
+    async def terminator_loop(self, tasks):
         '''
         Wrapper for Task Termination
         Waits for termination signal and then executes the termination sequence
@@ -2123,7 +2326,6 @@ class gearVRC:
         self.logger.log(logging.INFO, 'Starting Terminator...')
 
         while not self.finish_up:
-
             await self.terminate.wait()
             self.terminate.clear()
             await self.handle_termination(tasks=tasks)
@@ -2145,32 +2347,31 @@ async def main(args: argparse.Namespace):
 
     # Create all the async tasks
     # They will run until stop signal is created, stop signal is indicated with event
-    connection_task = asyncio.create_task(controller.update_connect())      # remain connected, will not terminate
-    keepalive_task  = asyncio.create_task(controller.keep_alive())          # keep sensor alive, will not terminate
+    connection_task = asyncio.create_task(controller.connect_loop())      # remain connected, will not terminate
+    keepalive_task  = asyncio.create_task(controller.keep_alive_loop())          # keep sensor alive, will not terminate
 
     tasks = [connection_task, keepalive_task] # frequently used tasks
     terminator_tasks = [keepalive_task]       # slow tasks, long wait times
 
-    if args.fusion:
-        # fusion_task     = asyncio.create_task(controller.update_fusion()) # update pose, will not terminate
-        # tasks.append(fusion_task)
-        gyroffset_task  = asyncio.create_task(controller.update_gyrOffset())
-        tasks.append(gyroffset_task)
-        terminator_tasks.append(gyroffset_task)
+    # fusion_task     = asyncio.create_task(controller.update_fusion()) # update pose, will not terminate
+    # tasks.append(fusion_task)
+    gyroffset_task  = asyncio.create_task(controller.update_gyrOffset())
+    tasks.append(gyroffset_task)
+    terminator_tasks.append(gyroffset_task)
 
-    if args.report > 0:
-        reporting_task  = asyncio.create_task(controller.update_report())   # report new data, will not terminate
-        tasks.append(reporting_task)
+    reporting_task  = asyncio.create_task(controller.report_loop())   # report new data, will not terminate
+    tasks.append(reporting_task)
 
-    if args.serial is not None:
-        serial_task     = asyncio.create_task(controller.update_serial())   # update serial, will not terminate
-        tasks.append(serial_task)
+    serial_task     = asyncio.create_task(controller.serial_loop())   # update serial, will not terminate
+    tasks.append(serial_task)
 
-    if args.zmqport is not None:
-        zmq_task     = asyncio.create_task(controller.update_zmq())         # update zmq, will not terminate
-        tasks.append(zmq_task)
+    zmq_task_pub     = asyncio.create_task(controller.zmqPUB_loop())  # update zmq, will not terminate
+    tasks.append(zmq_task_pub)
  
-    terminator_task = asyncio.create_task(controller.update_terminator(terminator_tasks)) # make sure we shutdown keep alive in timely fashion (has long sleep)
+    zmq_task_rep   = asyncio.create_task(controiller.zmqREP_loop())   # update zmq, will not terminate
+    tasks.append(zmq_task_rep)
+ 
+    terminator_task = asyncio.create_task(controller.terminator_loop(terminator_tasks)) # make sure we shutdown keep alive in timely fashion (has long sleep)
     tasks.append(terminator_task)
 
     # Set up a Control-C handler to gracefully stop the program
@@ -2235,7 +2436,7 @@ if __name__ == '__main__':
         type = int,
         metavar='<report>',
         help='report level: 0(None), 1(Rate only), 2(Regular)',
-        default = 2
+        default = 0
     )
 
     parser.add_argument(
@@ -2263,7 +2464,7 @@ if __name__ == '__main__':
         help='turns on virtual wheel and touchpad',
         default = False
     )
-
+    
     parser.add_argument(
         '-s',
         '--serial',
@@ -2285,13 +2486,23 @@ if __name__ == '__main__':
     )
 
     parser.add_argument(
-        '-z',
-        '--zmq',
-        dest = 'zmqport',
+        '-zp',
+        '--zmq_pub',
+        dest = 'zmqPortPUB',
         type = int,
-        metavar='<zmqport>',
+        metavar='<zmqPortPUB>',
         help='port used by ZMQ, e.g. 5556',
-        default = None
+        default = 5556
+    )
+
+    parser.add_argument(
+        '-zr',
+        '--zmq_rep',
+        dest = 'zmqPortREP',
+        type = int,
+        metavar='<zmqPortREP>',
+        help='port used by ZMQ, e.g. 5555',
+        default = 5555
     )
 
     parser.add_argument(
