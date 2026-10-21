@@ -50,4 +50,4 @@ The magnetometer is unusable without calibration. If you just need the touchpad 
 ## Acknowledgements
 This work is partly based on Jim Yang's work on reverse engineering the gear VR controller.
 
-&copy; Urs Utzinger, 2023
+&copy; Urs Utzinger, 2023,2026
