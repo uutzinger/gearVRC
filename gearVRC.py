@@ -38,7 +38,10 @@ import time
 import numpy as np
 import os
 from   copy import copy
-import serial_asyncio
+try:
+    import serial_asyncio
+except ImportError:
+    serial_asyncio = None   # only needed with --serial
 import re
 import msgpack
 import pathlib
@@ -61,8 +64,11 @@ if os.name == 'nt':
     from asyncio.windows_events import WindowsSelectorEventLoopPolicy
     asyncio.set_event_loop_policy(WindowsSelectorEventLoopPolicy())
 else:
-    import uvloop
-    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    try:
+        import uvloop
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except ImportError:
+        pass  # run with default event loop
 
 # to run bluetoothctl
 if os.name == 'posix':  import subprocess
@@ -77,19 +83,18 @@ ZMQTIMEOUT = 1000 # ms
 
 # Device name:
 ################################################################
-DEVICE_NAME = 'Gear VR Controller(17DB)'
+# The name contains the last two bytes of the controller's MAC address, which differ per controller
 DEVICE_MAC  = '2C:BA:BA:2E:17:DB'
+DEVICE_NAME = 'Gear VR Controller({})'.format(DEVICE_MAC.replace(':','')[-4:])
 BLETIMEOUT = 10.0
 
 # LOCATION
 ################################################################
-DECLINATION  = 8.124973426113137 * DEG2RAD      # Declination at your location
+DECLINATION  = 8.124973426113137      # [degrees] Declination at your location
 LATITUDE     = 32.253460           # [degrees] Tucson
 LONGITUDE    = -110.911789         # [degrees] Tucson
 ALTITUDE     = 730                 # [m], Tucson
 MAGFIELD     = 33078.93064435485   # [nano Tesla] Tucson
-MAGFIELD_MAX = 1.2*MAGFIELD/1000.  # micro Tesla
-MAGFIELD_MIN = 0.8*MAGFIELD/1000.  # micro Tesla
 
 # Program Timing:
 ################################################################
@@ -212,19 +217,21 @@ def loadCalibration(filename):
 
 def saveCalibration(filename, center, correctionMat):
     '''Save Calibration Data to JSON file'''
+    # center can be Vector3D or array
+    if hasattr(center, 'x'): center = [center.x, center.y, center.z]
     d = {
-    "offset_x": center[0], 
-    "offset_y": center[1], 
-    "offset_z": center[2], 
-    "cMat_00":  correctionMat[0,0],
-    "cMat_01":  correctionMat[0,1],
-    "cMat_02":  correctionMat[0,2],
-    "cMat_10":  correctionMat[1,0],
-    "cMat_11":  correctionMat[1,1],
-    "cMat_12":  correctionMat[1,2],
-    "cMat_20":  correctionMat[2,0],
-    "cMat_21":  correctionMat[2,1],
-    "cMat_22":  correctionMat[2,2]
+    "offset_x": float(center[0]), 
+    "offset_y": float(center[1]), 
+    "offset_z": float(center[2]), 
+    "cMat_00":  float(correctionMat[0,0]),
+    "cMat_01":  float(correctionMat[0,1]),
+    "cMat_02":  float(correctionMat[0,2]),
+    "cMat_10":  float(correctionMat[1,0]),
+    "cMat_11":  float(correctionMat[1,1]),
+    "cMat_12":  float(correctionMat[1,2]),
+    "cMat_20":  float(correctionMat[2,0]),
+    "cMat_21":  float(correctionMat[2,1]),
+    "cMat_22":  float(correctionMat[2,2])
     }
 
     with open(filename, 'w') as file:
@@ -244,7 +251,7 @@ def detectMotion(acc: float, gyr: float, acc_avg: float, gyr_avg:float) -> bool:
 
     # ACCELEROMETER
     # Absolute value
-    acc_test       = abs(acc) > FUZZY_ACCEL_ZERO_MAX and abs(acc) < FUZZY_ACCEL_ZERO_MIN
+    acc_test       = abs(acc) > FUZZY_ACCEL_ZERO_MAX or abs(acc) < FUZZY_ACCEL_ZERO_MIN
     # Sudden changes
     acc_delta_test = abs(acc_avg - acc) > FUZZY_DELTA_ACCEL_ZERO
 
@@ -641,7 +648,9 @@ class zmqWorkerGear():
                 else:
                     pass # we need imu and system data, lets wiat for both
                     
-            except:
+            except asyncio.CancelledError:
+                break
+            except Exception:
                 self.logger.log(logging.ERROR, 'gearVRC zmqWorker error')
                 poller.unregister(socket)
                 socket.close()
@@ -685,7 +694,11 @@ class gearVRC:
         # Shared States
         self.fusion                             = args.fusion
         self.motion                             = args.motion
-        self.report                             = args.report
+        self.virtual                            = args.virtual
+        self.declination                        = args.declination * DEG2RAD
+        self.magfield_max                       = 1.2*args.magfield/1000.   # micro Tesla
+        self.magfield_min                       = 0.8*args.magfield/1000.
+        self.report                            = args.report
 
         # ZMQ
         self.zmqPortPUB                         = args.zmqPortPUB
@@ -723,11 +736,11 @@ class gearVRC:
 
         self.manufacturer_name      = ''
         self.model_number           = ''
-        self.model_number           = ''
+        self.serial_number          = ''
         self.hardware_revision      = ''
         self.firmware_revision      = ''
         self.software_revision      = ''
-        self.pnp_ID                 = -1
+        self.pnp_ID                 = ''
 
         # Controller home button to stop program
         self.ESC_reps                   = args.escreps
@@ -735,7 +748,9 @@ class gearVRC:
         
         # Signals
         self.lost_connection            = asyncio.Event()
-        self.processedDataAvailable     = asyncio.Event()
+        self.processedDataAvailable     = asyncio.Event()  # used by report_loop, never cleared
+        self.serialDataAvailable        = asyncio.Event()  # each consumer needs its own event,
+        self.zmqDataAvailable           = asyncio.Event()  # otherwise they clear each other's signal
         self.terminate                  = asyncio.Event()
 
         # These Signals are easier to deal with without Event
@@ -751,6 +766,9 @@ class gearVRC:
         self.HighResMode                = False
 
         # device sensors
+        self.previous_sensorModeRequest = 0.
+        self.previous_sensorRaw         = None  # raw 32bit time stamp, used to detect wrap around
+        self.sensorWraps                = 0
         self.sensorTime                 = 0.    # There are 3 different times transmitted from the sensor
         # self.aTime                    = 0.    # Assuming the earliest time corresponds to IMU
         # self.bTime                    = 0.    #
@@ -993,81 +1011,92 @@ class gearVRC:
                 else:
                     self.connected = False
 
-            # Scan for Device
-            #################
-            self.device = None
-            # try to find device using its name
-            self.logger.log(logging.INFO,'Searching for {}'.format(self.device_name))            
-            if self.device_name is not None:
-                self.device = await BleakScanner.find_device_by_name(self.device_name, timeout=BLETIMEOUT)
-            if self.device is None:
-                # find by address because find by name did not work
-                if self.device_address is not None:
-                    self.device = await BleakScanner.find_device_by_address(self.device_address, timeout=BLETIMEOUT)
+            try:
+                # Scan for Device
+                #################
+                self.device = None
+                # try to find device using its name
+                self.logger.log(logging.INFO,'Searching for {}'.format(self.device_name))            
+                if self.device_name is not None:
+                    self.device = await BleakScanner.find_device_by_name(self.device_name, timeout=BLETIMEOUT)
+                if self.device is None:
+                    # find by address because find by name did not work
+                    if self.device_address is not None:
+                        self.device = await BleakScanner.find_device_by_address(self.device_address, timeout=BLETIMEOUT)
     
-            # Connect to Device
-            ###################
-            if self.device is not None:
+                # Connect to Device
+                ###################
+                if self.device is not None:
 
-                self.logger.log(logging.INFO,'Found {}'.format(self.device_name))
+                    self.logger.log(logging.INFO,'Found {}'.format(self.device_name))
 
-                # Create client                
-                async with BleakClient(self.device, disconnected_callback=self.handle_disconnect, timeout=BLETIMEOUT) as self.client:
-                    # Connect to device
-                    if not self.client.is_connected:
-                        self.logger.log(logging.INFO,'Connecting to {}'.format(self.device_name))
-                        await self.client.connect()
-                    else:
-                        self.logger.log(logging.INFO,'Already connected to {}'.format(self.device_name))
+                    # Create client                
+                    async with BleakClient(self.device, disconnected_callback=self.handle_disconnect, timeout=BLETIMEOUT) as self.client:
+                        # Connect to device
+                        if not self.client.is_connected:
+                            self.logger.log(logging.INFO,'Connecting to {}'.format(self.device_name))
+                            await self.client.connect()
+                        else:
+                            self.logger.log(logging.INFO,'Already connected to {}'.format(self.device_name))
 
-                    if self.client.is_connected:
-                        self.connected = True
-                        self.lost_connection.clear()
-                        self.logger.log(logging.INFO,'Finding Characteristics')
-                        # this needs to be run each time we create a new client
-                        self.find_characteristics() # scan and assign device characteristics
-                        # This needs to be run only once
-                        if first_time:
-                            # We dont need to read device information each time, as it remains the same
-                            self.logger.log(logging.INFO,'Reading Device Information')
-                            await self.read_deviceInformation() # populate device information
-                            first_time = False
-                        # this needs to be run each time we create a new client
-                        self.logger.log(logging.INFO,'Starting Sensor')
-                        await self.start_sensor(self.VRMode) # start the sensors
-                        self.startTime = time.perf_counter()
-                        # this needs to be run each time we create a new client
-                        self.logger.log(logging.INFO,'Subscribing to Notifications')
-                        await self.subscribe_notifications() # subscribe to device characteristics that have notification function
-                        self.logger.log(logging.INFO,'Setup completed')
-                    else:
-                        self.connected = False
+                        if self.client.is_connected:
+                            self.connected = True
+                            self.lost_connection.clear()
+                            self.logger.log(logging.INFO,'Finding Characteristics')
+                            # this needs to be run each time we create a new client
+                            self.find_characteristics() # scan and assign device characteristics
+                            # This needs to be run only once
+                            if first_time:
+                                # We dont need to read device information each time, as it remains the same
+                                self.logger.log(logging.INFO,'Reading Device Information')
+                                await self.read_deviceInformation() # populate device information
+                                first_time = False
+                            # this needs to be run each time we create a new client
+                            self.logger.log(logging.INFO,'Starting Sensor')
+                            await self.start_sensor(self.VRMode) # start the sensors
+                            self.startTime = time.perf_counter()
+                            # this needs to be run each time we create a new client
+                            self.logger.log(logging.INFO,'Subscribing to Notifications')
+                            await self.subscribe_notifications() # subscribe to device characteristics that have notification function
+                            self.logger.log(logging.INFO,'Setup completed')
+                        else:
+                            self.connected = False
 
-                    if self.connected:
-                        # reset timers
-                        # self.update_times()
+                        if self.connected:
+                            # reset timers
+                            # self.update_times()
                         
-                        # Wait until disconnection occurs
-                        await self.lost_connection.wait()
+                            # Wait until disconnection occurs
+                            await self.lost_connection.wait()
 
-                        # Connection was lost
-                        self.sensorIsBooting = True
-                        self.sensorRunInCounts = 0
+                            # Connection was lost
+                            self.sensorIsBooting = True
+                            self.sensorRunInCounts = 0
                         
-                        if not self.finish_up: 
-                            self.logger.log(logging.INFO,'Lost connection to {}'.format(self.device_name))            
-                    else:
-                        self.logger.log(logging.ERROR,"Could not connect to {}".format(self.device_name))
+                            if not self.finish_up: 
+                                self.logger.log(logging.INFO,'Lost connection to {}'.format(self.device_name))            
+                        else:
+                            self.logger.log(logging.ERROR,"Could not connect to {}".format(self.device_name))
 
-                # Lost connection or could not connect                        
-                sleep_time = 1.0
+                    # Lost connection or could not connect                        
+                    sleep_time = 1.0
 
-            else: 
-                # Device not found
-                ##################
-                self.logger.log(logging.INFO,'{} not found. Retrying...'.format(self.device_name))
+                else: 
+                    # Device not found
+                    ##################
+                    self.logger.log(logging.INFO,'{} not found. Retrying...'.format(self.device_name))
+                    sleep_time = 5.0
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # Bluetooth errors must not end the connection task, retry
+                self.logger.log(logging.ERROR,'Connection error: {}'.format(e))
+                self.connected = False
+                self.sensorIsBooting = True
+                self.sensorRunInCounts = 0
                 sleep_time = 5.0
-            
+
             await asyncio.sleep(sleep_time)
 
         self.logger.log(logging.INFO, 'Connect Task stopping')
@@ -1082,82 +1111,59 @@ class gearVRC:
             self.connected=False
 
  
+    def find_characteristic(self, service_uuid, characteristic_uuid):
+        '''
+        Return (service, characteristic) for the uuids, None for what is not available on the device
+        '''
+        service = None
+        for s in self.client.services:
+            if s.uuid == service_uuid:
+                service = s
+        if service is None:
+            return None, None
+        for c in service.characteristics:
+            if c.uuid == characteristic_uuid:
+                return service, c
+        return service, None
+
     def find_characteristics(self):
         '''
         Scan device services and characteristics for the expected values
+        Missing services or characteristics are set to None
         '''
 
         # Generic Access Profile
         ########################
-        for s in self.client.services:
-            if s.uuid == '00001800-0000-1000-8000-00805f9b34fb':
-                self.generic_access_profile_service = s        
         # read
-        try:
-            for c in self.generic_access_profile_service.characteristics:
-                if c.uuid == '00002a00-0000-1000-8000-00805f9b34fb':
-                    self.device_name_characteristic = c
-        except:
-            self.device_name_characteristic = None
+        self.generic_access_profile_service, self.device_name_characteristic = \
+            self.find_characteristic('00001800-0000-1000-8000-00805f9b34fb', '00002a00-0000-1000-8000-00805f9b34fb')
 
         # Device Information
         ####################
-        for s in self.client.services:
-            if s.uuid == '0000180a-0000-1000-8000-00805f9b34fb':
-                self.device_information_service = s
         # read
-        for c in self.device_information_service.characteristics:
-            if c.uuid == '00002a29-0000-1000-8000-00805f9b34fb':
-                self.manufacturer_name_characteristic = c
-        # read
-        for c in self.device_information_service.characteristics:
-            if c.uuid == '00002a24-0000-1000-8000-00805f9b34fb':
-                self.model_number_characteristic = c
-        # read
-        for c in self.device_information_service.characteristics:
-            if c.uuid == '00002a25-0000-1000-8000-00805f9b34fb':
-                self.serial_number_characteristic = c
-        # read
-        for c in self.device_information_service.characteristics:
-            if c.uuid == '00002a27-0000-1000-8000-00805f9b34fb':
-                self.hardware_revision_characteristic = c
-        # read
-        for c in self.device_information_service.characteristics:
-            if c.uuid == '00002a26-0000-1000-8000-00805f9b34fb':
-                self.firmware_version_characteristic = c
-        # read
-        for c in self.device_information_service.characteristics:
-            if c.uuid == '00002a28-0000-1000-8000-00805f9b34fb':
-                self.software_revision_characteristic = c
-        # read
-        for c in self.device_information_service.characteristics:
-            if c.uuid == '00002a50-0000-1000-8000-00805f9b34fb':
-                self.PnP_ID_characteristic = c
+        DIS = '0000180a-0000-1000-8000-00805f9b34fb'
+        self.device_information_service, self.manufacturer_name_characteristic = self.find_characteristic(DIS, '00002a29-0000-1000-8000-00805f9b34fb')
+        _, self.model_number_characteristic       = self.find_characteristic(DIS, '00002a24-0000-1000-8000-00805f9b34fb')
+        _, self.serial_number_characteristic      = self.find_characteristic(DIS, '00002a25-0000-1000-8000-00805f9b34fb')
+        _, self.hardware_revision_characteristic  = self.find_characteristic(DIS, '00002a27-0000-1000-8000-00805f9b34fb')
+        _, self.firmware_version_characteristic   = self.find_characteristic(DIS, '00002a26-0000-1000-8000-00805f9b34fb')
+        _, self.software_revision_characteristic  = self.find_characteristic(DIS, '00002a28-0000-1000-8000-00805f9b34fb')
+        _, self.PnP_ID_characteristic             = self.find_characteristic(DIS, '00002a50-0000-1000-8000-00805f9b34fb')
 
         # Battery Service
         #################
-        for s in self.client.services:
-            if s.uuid == '0000180f-0000-1000-8000-00805f9b34fb':
-                self.battery_service = s
         # read & notify
-        for c in self.battery_service.characteristics:
-            if c.uuid == '00002a19-0000-1000-8000-00805f9b34fb':
-                self.battery_level_characteristic = c
+        self.battery_service, self.battery_level_characteristic = \
+            self.find_characteristic('0000180f-0000-1000-8000-00805f9b34fb', '00002a19-0000-1000-8000-00805f9b34fb')
 
         # Controller Sensor Data
         ########################
-        for s in self.client.services:
-            if s.uuid == '4f63756c-7573-2054-6872-65656d6f7465': # SERVICE
-                self.controller_data_service = s
+        CDS = '4f63756c-7573-2054-6872-65656d6f7465'
         # read & notify
-        for c in self.controller_data_service.characteristics:
-            if c.uuid == 'c8c51726-81bc-483b-a052-f7a14ea3d281': # NOTIFY
-                self.controller_data_characteristic = c
+        self.controller_data_service, self.controller_data_characteristic = self.find_characteristic(CDS, 'c8c51726-81bc-483b-a052-f7a14ea3d281')
         # read & write
-        for c in self.controller_data_service.characteristics:
-            if c.uuid == 'c8c51726-81bc-483b-a052-f7a14ea3d282': # WRITE
-                self.controller_command_characteristics = c
-        
+        _, self.controller_command_characteristics = self.find_characteristic(CDS, 'c8c51726-81bc-483b-a052-f7a14ea3d282')
+
     async def read_deviceInformation(self):
         '''
         Read Device Information
@@ -1180,8 +1186,6 @@ class gearVRC:
             if self.device_name_characteristic is not None and self.connected:
                 value = await self.client.read_gatt_char(self.device_name_characteristic)
                 self.device_name = value.decode()
-            else:
-                self.device_name = DEVICE_NAME
             self.logger.log(logging.INFO,'Device Name: {}'.format(self.device_name))                
         else:
             self.logger.log(logging.ERROR, 'Could not read device name: disconnected')
@@ -1221,7 +1225,7 @@ class gearVRC:
                 value = await self.client.read_gatt_char(self.hardware_revision_characteristic)
                 self.hardware_revision = value.decode()
             else:
-                self.serial_number = ''
+                self.hardware_revision = ''
             self.logger.log(logging.INFO,'Hardware Revision: {}'.format(self.hardware_revision))                
         else:
             self.logger.log(logging.ERROR, 'Could not read hardware revision: disconnected')
@@ -1229,9 +1233,9 @@ class gearVRC:
         if self.client is not None:
             if self.firmware_version_characteristic is not None and self.connected:
                 value = await self.client.read_gatt_char(self.firmware_version_characteristic)
-                self.firmware_revision = int.from_bytes(value,'big')
+                self.firmware_revision = value.decode(errors='replace')
             else:
-                self.firmware_revision = -1
+                self.firmware_revision = ''
             self.logger.log(logging.INFO,'Firmware Revision: {}'.format(self.firmware_revision))
         else:
             self.logger.log(logging.ERROR, 'Could not read firmware revision: disconnected')
@@ -1249,9 +1253,9 @@ class gearVRC:
         if self.client is not None:
             if self.PnP_ID_characteristic is not None and self.connected:
                 value = await self.client.read_gatt_char(self.PnP_ID_characteristic)
-                self.pnp_ID = int.from_bytes(value,'big')
+                self.pnp_ID = value.hex()
             else:
-                self.pnp_ID = -1
+                self.pnp_ID = ''
             self.logger.log(logging.INFO,'PnP ID: {}'.format(self.pnp_ID))                
         else:
             self.logger.log(logging.ERROR, 'Could not read pnp id: disconnected')
@@ -1281,7 +1285,7 @@ class gearVRC:
         '''
         if self.client is not None:
             # unsubscribe from sensor data
-            if self.controller_command_characteristics is not None:
+            if self.controller_data_characteristic is not None:
                 await self.client.stop_notify(self.controller_data_characteristic)
             else:
                 self.logger.log(logging.ERROR, 'Client does not have access to data chracteristic')
@@ -1345,7 +1349,13 @@ class gearVRC:
         #   accelerometer is usually read faster than magnetometer, 
         #   gyroscope and accelerometer are usually on the same chip
         #   assuming earliest time stamp is the IMU time stamp
-        self.sensorTime = (struct.unpack('<I', data[0:4])[0]   & 0xFFFFFFFF) /1000000.
+        # The sensor time stamp is an unsigned 32bit counter in microseconds, it wraps around every ~71.6 minutes.
+        # We unwrap it so that sensorTime increases continuously.
+        sensorRaw = struct.unpack('<I', data[0:4])[0] & 0xFFFFFFFF
+        if (self.previous_sensorRaw is not None) and (self.previous_sensorRaw - sensorRaw > 0x80000000):
+            self.sensorWraps += 1
+        self.previous_sensorRaw = sensorRaw
+        self.sensorTime = (sensorRaw + (self.sensorWraps << 32)) /1000000.
         # self.aTime      = (struct.unpack('<I', data[16:20])[0] & 0xFFFFFFFF) /1000000.
         # self.bTime      = (struct.unpack('<I', data[32:36])[0] & 0xFFFFFFFF) /1000000.
 
@@ -1568,9 +1578,9 @@ class gearVRC:
         self.mag_cal = calibrate(data=self.mag, offset=self.mag_offset, crosscorr=self.mag_crosscorr)
         self.gyr_cal = calibrate(data=self.gyr, offset=self.gyr_offset, crosscorr=self.gyr_crosscorr)
 
-        if dt > 1.0: 
+        if dt > 1.0 or dt < 0.: 
             # First run or reconnection, need AHRS algorithm to initialize
-            if (self.mag_cal.norm >  MAGFIELD_MAX) or (self.mag_cal.norm < MAGFIELD_MIN):
+            if (self.mag_cal.norm > self.magfield_max) or (self.mag_cal.norm < self.magfield_min):
                 # Mag is not in acceptable range
                 self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=None,dt=-1)
                 self.magok = False
@@ -1579,7 +1589,7 @@ class gearVRC:
                 self.magok = True
 
         else:
-            if (self.mag_cal.norm >  MAGFIELD_MAX) or (self.mag_cal.norm < MAGFIELD_MIN):
+            if (self.mag_cal.norm > self.magfield_max) or (self.mag_cal.norm < self.magfield_min):
                 # Mag not in acceptable range
                 self.q = self.AHRS.update(acc=self.acc_cal,gyr=self.gyr_cal,mag=None,dt=dt)
                 self.magok = False
@@ -1588,7 +1598,7 @@ class gearVRC:
                 self.magok = True
 
         self.rpy=q2rpy(q=self.q)
-        self.heading = rpymag2h(rpy=self.rpy, mag=self.mag_cal, declination=DECLINATION)
+        self.heading = rpymag2h(rpy=self.rpy, mag=self.mag_cal, declination=self.declination)
 
     def compute_motion(self):
         self.Position.update(q=self.q, acc=self.acc_cal, moving=self.moving, timestamp=self.sensorTime)
@@ -1672,7 +1682,7 @@ class gearVRC:
             self.data_updateCounts = 0
 
         if self.paused:
-            await asyncio.sleep(1) # allow other tasks to run
+            await asyncio.sleep(0) # drop the data but do not delay the BLE callback
             
         else:
             # Process the Data
@@ -1726,7 +1736,7 @@ class gearVRC:
 
                     # Motion
                     ###############################################################
-                    if self.motion:
+                    if self.motion and self.fusion:  # motion needs the orientation from fusion
                         # update interval
                         start_motionUpdate = time.perf_counter()
                         # fps
@@ -1747,10 +1757,14 @@ class gearVRC:
 
                 else:
                     self.logger.log(logging.ERROR, 'Not enough values: {}'.format(len(data)))
-                    # switch to sensor mode
-                    await self.start_sensor(VRMode = False)
+                    # switch to sensor mode, but not more often than every 5 seconds
+                    if startTime - self.previous_sensorModeRequest > 5.:
+                        self.previous_sensorModeRequest = startTime
+                        await self.start_sensor(VRMode = False)
 
                 self.processedDataAvailable.set()
+                self.serialDataAvailable.set()
+                self.zmqDataAvailable.set()
                 
                 self.data_deltaTime = time.perf_counter() - startTime
 
@@ -1864,7 +1878,7 @@ class gearVRC:
                     msg_out+= 'Virtual {:>10.6f}, {:>3d}/s\n'.format(self.virtual_deltaTime*1000., self.virtual_rate)
                 if self.fusion:
                     msg_out+= 'Fusion  {:>10.6f}, {:>3d}/s\n'.format(self.fusion_deltaTime*1000.,  self.fusion_rate)
-                if self.serial is not None:
+                if self.serial:
                     msg_out+= 'Serial  {:>10.6f}, {:>3d}/s\n'.format(self.serial_deltaTime*1000.,  self.serial_rate)
                 if self.zmqPortPUB is not None:
                     msg_out+= 'ZMQ     {:>10.6f}, {:>3d}/s\n'.format(self.zmqPUB_deltaTime*1000.,  self.zmqPUB_rate)
@@ -1930,7 +1944,7 @@ class gearVRC:
                         msg_out+= 'Using Mag in AHRS: {}\n'.format('Y' if self.magok else 'N')
 
                     #print('R5', end='', flush=True)
-                    if self..motion:
+                    if self.motion:
                         msg_out+= '-------------------------------------------------\n'
                         # print('R6a', end='', flush=True)
                         msg_out+= 'Residual {:>8.3f} {:>8.3f} {:>8.3f} N:  {:>8.3f}\n'.format(self.residuals.x,self.residuals.y,self.residuals.z,self.residuals.norm)
@@ -1968,7 +1982,16 @@ class gearVRC:
         if self.args.serial is not None:
        
             self.logger.log(logging.INFO, 'Creating serial reader and writer with {} at {} baud...'.format(self.serialport, self.baudrate))
-            reader, writer = await serial_asyncio.open_serial_connection(url=self.serialport, baudrate=self.baudrate)
+            if serial_asyncio is None:
+                self.logger.log(logging.ERROR, 'pyserial-asyncio is not installed, can not use serial port')
+                self.serial = False
+                return
+            try:
+                reader, writer = await serial_asyncio.open_serial_connection(url=self.serialport, baudrate=self.baudrate)
+            except Exception as e:
+                self.logger.log(logging.ERROR, 'Could not open serial port {}: {}'.format(self.serialport, e))
+                self.serial = False
+                return
 
             # writer.write('Welcome to gearVRC\r\n'.encode())
         
@@ -1991,10 +2014,8 @@ class gearVRC:
 
                         elif 'C' in line_in:
                             self.logger.log(logging.INFO,'We dont have EEPROM')
-                            writer.write('N.A.\r\n')
-                            writer.write('N.A.\r\n')
-                            writer.write('N.A.\r\n')
-                            writer.write('N.A.\r\n')
+                            for _ in range(4):
+                                writer.write('N.A.\r\n'.encode())
                         else:
                             # check if b command was present
                             # extract number of readings requested
@@ -2007,8 +2028,8 @@ class gearVRC:
 
                                 for i in range(count):
 
-                                    await self.processedDataAvailable.wait()
-                                    self.processedDataAvailable.clear()
+                                    await self.serialDataAvailable.wait()
+                                    self.serialDataAvailable.clear()
 
                                     self.serial_updateCounts += 1
                                 
@@ -2060,11 +2081,11 @@ class gearVRC:
          - fusion if enabled
         '''
 
-        self.logger.log(logging.INFO, 'Creating ZMQ Publisher at \'tcp://*:{}\' ...'.format(self.args.zmqport))
+        self.logger.log(logging.INFO, 'Creating ZMQ Publisher at \'tcp://*:{}\' ...'.format(self.zmqPortPUB))
 
         context = zmq.asyncio.Context()      
         socket = context.socket(zmq.PUB)
-        socket.bind("tcp://*:{}".format(self.args.zmqport))
+        socket.bind("tcp://*:{}".format(self.zmqPortPUB))
 
         data_system  = gearSystemData()
         data_imu     = gearIMUData()
@@ -2083,8 +2104,8 @@ class gearVRC:
 
             startTime = time.perf_counter()
 
-            await self.processedDataAvailable.wait()
-            self.processedDataAvailable.clear()
+            await self.zmqDataAvailable.wait()
+            self.zmqDataAvailable.clear()
 
             # fps
             self.zmqPUB_updateCounts += 1
@@ -2237,7 +2258,7 @@ class gearVRC:
                             self.logger.log(logging.INFO, 'ZMQ motion received: {}'.format(value))
                         elif topic == b"fusion":
                             if value == b"\x01": self.fusion = True
-                            else:                self.fusion = False
+                            else:                self.motion = self.fusion = False  # motion needs fusion
                             socket.send_string("OK")
                             self.logger.log(logging.INFO, 'ZMQ fusion received: {}'.format(value))
                         elif topic == b"report":
@@ -2248,12 +2269,12 @@ class gearVRC:
                             if value == b"\x01": self.virtual = True
                             else:                self.virtual = False
                             socket.send_string("OK")
-                            self.logger.log(logging.INFO, 'ZMQ fusion received: {}'.format(value))
+                            self.logger.log(logging.INFO, 'ZMQ virtual received: {}'.format(value))
                         elif topic == b"serial":
-                            if value == b"\x01": self.serial = True
-                            else:                self.serial = False
+                            # serial can only be turned on if a serial port was provided
+                            self.serial = (value == b"\x01") and (self.serialport is not None)
                             socket.send_string("OK")
-                            self.logger.log(logging.INFO, 'ZMQ fusion received: {}'.format(value))
+                            self.logger.log(logging.INFO, 'ZMQ serial received: {}'.format(value))
                         elif topic == b"stop":
                             if value == b"\x01": 
                                 self.terminate.set()
@@ -2284,7 +2305,9 @@ class gearVRC:
                         self.logger.log(logging.ERROR, 'ICM zmqWorker receiver malformed REQ message')
                         socket.send_string("ERROR")
 
-            except:
+            except asyncio.CancelledError:
+                break
+            except Exception:
                 self.logger.log(logging.ERROR, 'ICM zmqWorker REQ/REP error')
                 poller.unregister(socket)
                 socket.close()
@@ -2309,8 +2332,11 @@ class gearVRC:
         '''
         self.logger.log(logging.INFO, 'Controller ESC, Control-C or Kill signal detected')
         self.finish_up = True
-        await self.stop_sensor()
-        await self.disconnect()
+        try:
+            await self.stop_sensor()
+            await self.disconnect()
+        except Exception as e:
+            self.logger.log(logging.ERROR, 'Error while stopping sensor: {}'.format(e))
         if tasks is not None: # This will terminate tasks faster
             self.logger.log(logging.INFO, 'Cancelling all Tasks...')
             await asyncio.sleep(1) # give some time for tasks to finish up
@@ -2351,13 +2377,11 @@ async def main(args: argparse.Namespace):
     keepalive_task  = asyncio.create_task(controller.keep_alive_loop())          # keep sensor alive, will not terminate
 
     tasks = [connection_task, keepalive_task] # frequently used tasks
-    terminator_tasks = [keepalive_task]       # slow tasks, long wait times
 
     # fusion_task     = asyncio.create_task(controller.update_fusion()) # update pose, will not terminate
     # tasks.append(fusion_task)
     gyroffset_task  = asyncio.create_task(controller.update_gyrOffset())
     tasks.append(gyroffset_task)
-    terminator_tasks.append(gyroffset_task)
 
     reporting_task  = asyncio.create_task(controller.report_loop())   # report new data, will not terminate
     tasks.append(reporting_task)
@@ -2368,10 +2392,11 @@ async def main(args: argparse.Namespace):
     zmq_task_pub     = asyncio.create_task(controller.zmqPUB_loop())  # update zmq, will not terminate
     tasks.append(zmq_task_pub)
  
-    zmq_task_rep   = asyncio.create_task(controiller.zmqREP_loop())   # update zmq, will not terminate
+    zmq_task_rep   = asyncio.create_task(controller.zmqREP_loop())   # update zmq, will not terminate
     tasks.append(zmq_task_rep)
  
-    terminator_task = asyncio.create_task(controller.terminator_loop(terminator_tasks)) # make sure we shutdown keep alive in timely fashion (has long sleep)
+    # On termination all tasks are cancelled, many of them block waiting for data or commands and would never end otherwise
+    terminator_task = asyncio.create_task(controller.terminator_loop(list(tasks)))
     tasks.append(terminator_task)
 
     # Set up a Control-C handler to gracefully stop the program
@@ -2379,8 +2404,13 @@ async def main(args: argparse.Namespace):
     if os.name == 'posix':
         # Get the main event loop
         loop = asyncio.get_running_loop()
-        loop.add_signal_handler(signal.SIGINT,  lambda: asyncio.create_task(controller.handle_termination(tasks=tasks)) ) # control-c
-        loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(controller.handle_termination(tasks=tasks)) ) # kill
+        signal_tasks = set()  # keep references so the tasks are not garbage collected
+        def on_signal():
+            t = asyncio.create_task(controller.handle_termination(tasks=tasks))
+            signal_tasks.add(t)
+            t.add_done_callback(signal_tasks.discard)
+        loop.add_signal_handler(signal.SIGINT,  on_signal) # control-c
+        loop.add_signal_handler(signal.SIGTERM, on_signal) # kill
 
     # Wait until all tasks are completed, which is when user wants to terminate the program
     await asyncio.wait(tasks, timeout=float('inf'))
@@ -2399,8 +2429,8 @@ if __name__ == '__main__':
         metavar='<name>',
         dest = 'name',
         type = str,
-        help='the name of the bluetooth device to connect to',
-        default = DEVICE_NAME
+        help='the name of the bluetooth device to connect to, default is Gear VR Controller(<last 4 hex digits of mac>)',
+        default = None
     )
 
     device_group.add_argument(
@@ -2466,6 +2496,24 @@ if __name__ == '__main__':
     )
     
     parser.add_argument(
+        '--declination',
+        dest = 'declination',
+        type = float,
+        metavar='<declination>',
+        help='magnetic declination at your location in degrees, default is Tucson',
+        default = DECLINATION
+    )
+
+    parser.add_argument(
+        '--magfield',
+        dest = 'magfield',
+        type = float,
+        metavar='<magfield>',
+        help='magnetic field strength at your location in nano Tesla, default is Tucson',
+        default = MAGFIELD
+    )
+
+    parser.add_argument(
         '-s',
         '--serial',
         dest = 'serial',
@@ -2528,6 +2576,10 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.motion: args.fusion=True
+
+    # Derive device name from the last two bytes of the MAC address unless given explicitly
+    if args.name is None:
+        args.name = 'Gear VR Controller({})'.format(args.address.replace(':','')[-4:].upper())
         
     log_level = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(

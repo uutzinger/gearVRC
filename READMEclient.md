@@ -62,14 +62,16 @@ gearVRC.py has the following options
   -t <esctimeoput>, --esctimeout <esctimeout>
 						timeout for counting the home button presses in seconds, e.g. 2.0
 ```
-- ```-n``` by default is ```Gear VR Controller(17DB)```
-- ```-a``` vy default is ```2C:BA:BA:2E:17:DB```
+- ```-n``` by default is derived from the MAC address: ```Gear VR Controller(<last 4 hex digits of MAC>)```, i.e. ```Gear VR Controller(17DB)```
+- ```-a``` by default is ```2C:BA:BA:2E:17:DB```. The controller ID in the name (```17DB```) differs per controller and is derived from the MAC address
 - ```-vr``` is not working, supposed to start sensor in VR Mode
 - ```-d``` switches loggin output to DEBUG
 - ```-r``` set debuggin to rate display (1), or full display (2), default is no reporting
 - ```-f``` enables AHRS sensor fusion
 - ```-m``` enables motion calculation
 - ```-v``` enables wheel simulation by sliding finger along the rim of touchpad, also enables scrolling by adding movements to previous position on touch pad
+- ```--declination``` magnetic declination in degrees at your location, default is Tucson (8.12)
+- ```--magfield``` magnetic field strength in nano Tesla at your location, default is Tucson (33079)
 - ```-s``` provide serial port so that freeIMUCal can obtain data from the sensors
 - ```-b``` us baudrate with default of 115200
 - ```-z``` for ZMQ data announcement
